@@ -395,8 +395,14 @@ EOF
   printf '\n%s\n' "$(yel7 '==> Pin the Go toolchain from go.mod')"
   printf '    GOTOOLCHAIN=%s\n' "${GOTOOLCHAIN:-}"
 
-  printf '\n%s\n' "$(yel7 '==> Update go.mod to reflect actual dependencies')"
-  run_streaming grn3 go mod tidy
+  local tidy_child
+  tidy_child=$(_go_workspace_child) || return 1
+  if [ -n "$tidy_child" ]; then
+    printf '\n%s\n' "$(yel7 "==> Skip go mod tidy while go.work names child $tidy_child; the release rebuild runs it")"
+  else
+    printf '\n%s\n' "$(yel7 '==> Update go.mod to reflect actual dependencies')"
+    run_streaming grn3 go mod tidy
+  fi
 
   printf '\n%s\n' "$(yel7 '==> Format Go code according to standard rules')"
   local fmt_out
@@ -1115,10 +1121,14 @@ _rel_run_inner() {
     printf '%s\n' '- git add -A and verify the staged tree'
     printf -- '- git commit -m %s and verify the committed tree\n' "$(_go_quote "$message")"
   fi
-  printf '%s\n' '- validate every utility declaration'
-  printf '%s\n' '- compile each utility once from clean committed HEAD'
-  printf '%s\n' '- validate every compiled utility version and provenance'
-  printf '%s\n' '- atomically install every validated utility and recheck it'
+  if _release_has_utilities; then
+    printf '%s\n' '- validate every utility declaration'
+    printf '%s\n' '- compile each utility once from clean committed HEAD'
+    printf '%s\n' '- validate every compiled utility version and provenance'
+    printf '%s\n' '- atomically install every validated utility and recheck it'
+  else
+    printf '%s\n' '- release the library from its tag; compile and install no utility'
+  fi
   printf '%s\n' "- git tag $tag"
   printf '%s\n' "- git push origin $tag"
   printf '%s\n' "- git ${_rel_push_branch_args[*]}"
@@ -1249,6 +1259,7 @@ _release_validate_prepared() { # $1=tag $2=message
     return 1
   }
   _validate_release_message release "$message" || return 1
+  _children_check_overrides release || return 1
   if git rev-parse -q --verify "refs/tags/$tag" >/dev/null 2>&1; then
     _failure "release: tag $tag already exists"
     return 1
@@ -1297,6 +1308,15 @@ _utility_count_label() { # $1=count -> "1 utility" or "<N> utilities"
   fi
 }
 
+# _release_has_utilities succeeds when cmd/<target>/main.go exists.
+_release_has_utilities() {
+  local d
+  for d in cmd/*/; do
+    [ ! -f "${d}main.go" ] || return 0
+  done
+  return 1
+}
+
 _release_compile_validate_install() { # $1=tag
   local tag="$1" release_version="${1#v}" revision bin_dir ext d target version decls compiled output
   local targets=() versions=()
@@ -1305,8 +1325,8 @@ _release_compile_validate_install() { # $1=tag
     targets+=("$(basename "$d")")
   done
   [ "${#targets[@]}" -gt 0 ] || {
-    _failure 'release: no cmd/<target>/main.go utilities were discovered'
-    return 1
+    printf '\n%s\n' "$(yel7 '==> Release a library with no cmd/<target>/main.go from its tag alone')"
+    return 0
   }
   local sorted
   sorted=$(printf '%s\n' "${targets[@]}" | LC_ALL=C sort)
@@ -1528,6 +1548,7 @@ _prep_run_inner() {
     return 1
   fi
   _validate_release_message prep "$message" || return 1
+  _children_check_overrides prep || return 1
 
   # Phase 2: validate git state and the Go module major version.
   _prep_validate_git_state "$root" "$version" || return 1
@@ -2309,6 +2330,100 @@ EOF
 # Dispatch
 # ════════════════════════════════════════════════════════════════════════════
 
+# _go_workspace_file prints the go.work file that `go env GOWORK` would name:
+# $GOWORK when set, nothing when it is off, else the nearest go.work upward.
+_go_workspace_file() {
+  local work="${GOWORK-}" dir
+  case "$work" in
+  off) return 0 ;;
+  '' | auto)
+    dir=$(pwd -P) || return 0
+    while :; do
+      if [ -f "$dir/go.work" ]; then
+        printf '%s\n' "$dir/go.work"
+        return 0
+      fi
+      [ "$dir" != / ] || return 0
+      dir=$(dirname "$dir")
+    done
+    ;;
+  *) [ ! -f "$work" ] || printf '%s\n' "$work" ;;
+  esac
+}
+
+# _go_workspace_uses prints each directory that a go.work file uses.
+_go_workspace_uses() { # $1=go.work path
+  awk -v dir="$(dirname "$1")" '
+    /^[[:space:]]*\/\// { next }
+    /^[[:space:]]*use[[:space:]]*\(/ { block = 1; next }
+    block && /^[[:space:]]*\)/ { block = 0; next }
+    { path = "" }
+    block { path = $1 }
+    !block && $1 == "use" { path = $2 }
+    path != "" {
+      gsub(/"/, "", path)
+      if (path !~ /^\//) path = dir "/" path
+      print path
+    }
+  ' "$1"
+}
+
+# _go_workspace_child prints the first declared child that the go.work
+# workspace uses, or nothing.
+_go_workspace_child() {
+  local children work path entry
+  children=$(_children_dirs) || return 1
+  [ -n "$children" ] || return 0
+  work=$(_go_workspace_file)
+  [ -n "$work" ] || return 0
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    entry=$(_children_owner "$children" "$path")
+    if [ -n "$entry" ]; then
+      printf '%s\n' "$entry"
+      return 0
+    fi
+  done <<EOF
+$(_go_workspace_uses "$work")
+EOF
+}
+
+# _child_override_candidates prints "<override><TAB><path>" for each Go local
+# override: go.mod replace directives with a filesystem path, and go.work uses.
+_child_override_candidates() {
+  local work path
+  if [ -f go.mod ]; then
+    awk '
+      /^[[:space:]]*\/\// { next }
+      /^[[:space:]]*replace[[:space:]]*\(/ { block = 1; next }
+      block && /^[[:space:]]*\)/ { block = 0; next }
+      (block || $1 == "replace") && index($0, "=>") {
+        target = substr($0, index($0, "=>") + 2)
+        sub(/^[[:space:]]+/, "", target)
+        split(target, parts, /[[:space:]]+/)
+        path = parts[1]
+        gsub(/"/, "", path)
+        if (path ~ /^(\.\.?(\/|$)|\/)/) print "go.mod replace\t" path
+      }
+    ' go.mod
+  fi
+  work=$(_go_workspace_file)
+  [ -n "$work" ] || return 0
+  while IFS= read -r path; do
+    [ -z "$path" ] || printf 'go.work use\t%s\n' "$path"
+  done <<EOF
+$(_go_workspace_uses "$work")
+EOF
+}
+
+# _child_override_recovery names the Go pin update that replaces an override.
+_child_override_recovery() { # $1=child entry
+  local module
+  module=$(awk '$1 == "module" { print $2; exit }' "$1/go.mod" 2>/dev/null)
+  [ -n "$module" ] || module='<module>'
+  printf 'remove the override, then move the pin with go mod edit -dropreplace=%s when a replace exists and go get %s@<tag>' "$module" "$module"
+}
+
 # --- child repositories (identical in every CODE stack build script) ---
 
 # _children_fail prints one child-build failure with its recovery action.
@@ -2399,6 +2514,10 @@ _build_children() { # $1=scoped $2...=tooling paths
   done <"$registry"
   [ "${#entries[@]}" -gt 0 ] || return 0
   for entry in "${entries[@]}"; do
+    if [ ! -e "$entry" ] && [ ! -L "$entry" ]; then
+      _children_fail "child $entry is missing; clone the child repository at $entry, run a scoped build, which skips children, or remove it with govna rm --child"
+      return 1
+    fi
     child=$(cd "$entry" 2>/dev/null && pwd -P) || {
       _children_fail "child $entry is not a directory; restore the child repository or remove it with govna rm --child"
       return 1
@@ -2426,6 +2545,57 @@ _build_children() { # $1=scoped $2...=tooling paths
     }
     printf '\n'
   done
+}
+
+# _children_dirs prints "<entry><TAB><directory>" for each declared child
+# directory that exists, after validating govna/children.txt.
+_children_dirs() {
+  local registry='govna/children.txt' entry dir first=1
+  [ -e "$registry" ] || return 0
+  _children_validate "$registry" || return 1
+  while IFS= read -r entry; do
+    if [ "$first" -eq 1 ]; then
+      first=0
+      continue
+    fi
+    dir=$(cd "$entry" 2>/dev/null && pwd -P) || continue
+    printf '%s\t%s\n' "$entry" "$dir"
+  done <"$registry"
+}
+
+# _children_owner prints the declared child entry whose directory holds path.
+_children_owner() { # $1=_children_dirs output $2=path
+  local resolved entry dir
+  resolved=$(cd "$2" 2>/dev/null && pwd -P) || return 0
+  while IFS="$(printf '\t')" read -r entry dir; do
+    [ -n "$entry" ] || continue
+    case "$resolved/" in "$dir/"*)
+      printf '%s\n' "$entry"
+      return 0
+      ;;
+    esac
+  done <<EOF
+$1
+EOF
+}
+
+# _children_check_overrides stops prep or release when a local override from
+# this stack's _child_override_candidates hook resolves to a declared child.
+_children_check_overrides() { # $1=prep|release
+  local label="$1" children candidates kind path entry found=0
+  children=$(_children_dirs) || return 1
+  [ -n "$children" ] || return 0
+  candidates=$(_child_override_candidates) || return 1
+  while IFS="$(printf '\t')" read -r kind path; do
+    [ -n "$kind" ] || continue
+    entry=$(_children_owner "$children" "$path")
+    [ -n "$entry" ] || continue
+    printf '%s: %s %s builds against declared child %s; %s\n' "$label" "$kind" "$path" "$entry" "$(_child_override_recovery "$entry")" >&2
+    found=1
+  done <<EOF
+$candidates
+EOF
+  [ "$found" -eq 0 ]
 }
 
 # --- end child repositories ---
