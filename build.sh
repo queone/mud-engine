@@ -358,7 +358,7 @@ EOF
   trap '_build_signal_exit 143' TERM
 
   local module_path bin_dir ext
-  module_path=$(go list -m -f '{{.Path}}')
+  module_path=$(GOWORK=off go list -m -f '{{.Path}}')
   bin_dir="$(go env GOPATH)/bin"
   ext="$(go env GOEXE)"
 

@@ -15,7 +15,7 @@ go run github.com/queone/mud-engine/cmd/mud-verify@v0.2.0 https://mudball.one/ga
 ### Usage
 
 ```text
-mud-verify v0.2.1
+mud-verify v0.2.2
 Replay a Mud Baseball game and check every link of its proof
 github.com/queone/mud-engine/cmd/mud-verify
 
