@@ -9,7 +9,7 @@ public checksum database (sum.golang.org) records each version's exact content.
 Pick a game on the site and run the verifier at the version its proof names:
 
 ```sh
-go run github.com/queone/mud-engine/cmd/mud-verify@v0.1.0 https://mudball.one/games/1234
+go run github.com/queone/mud-engine/cmd/mud-verify@v0.2.0 https://mudball.one/games/1234
 ```
 
 It fetches the game's proof, its Day's commitment, and its box score, and checks six links:
@@ -41,7 +41,12 @@ BOXSCORE` checks saved copies of the three answers offline.
 - `engine`: one game's simulation from two clubs and a seed.
 - `beacon`: drand quicknet constants, the pinned public key, round verification, and a relay client.
 - `proof`: the input format, the inputs hash, the shapes the site serves, `Fetch`, and `Check`.
-- `cmd/mud-verify`: the verifier.
+- `cmd/mud-verify`: the verifier; [its page](cmd/mud-verify/README.md) holds its full help.
+
+## Build
+
+`./build.sh` checks a change: formatting, vet, staticcheck, the tests, and the verifier's version and help. It
+then installs `mud-verify`.
 
 ## License
 

@@ -18,25 +18,42 @@ import (
 	"github.com/queone/mud-engine/proof"
 )
 
-const usage = `mud-verify replays a Mud Baseball game and checks every link of its proof.
+// programVersion is the verifier's release version; the build checks it, and
+// release prep bumps it.
+const programVersion = "0.2.0"
 
-Usage:
+// usage is the help, in the shape the build's help probe checks, and the text
+// of the Usage block in cmd/mud-verify/README.md.
+func usage() string {
+	return "mud-verify v" + programVersion + `
+Replay a Mud Baseball game and check every link of its proof
+github.com/queone/mud-engine/cmd/mud-verify
+
+Usage
   mud-verify URL
   mud-verify -f PROOF -c COMMITMENT -b BOXSCORE
 
-URL is a game's box score page, https://SITE/games/ID, or its API answer,
-https://SITE/api/games/ID. The second form checks saved copies of the game's
-/api/games/ID/proof, its Day's commitment, and /api/games/ID.
+  URL is a game's box score page, https://SITE/games/ID, or its API answer,
+  https://SITE/api/games/ID. The second form checks saved copies of the game's
+  /api/games/ID/proof, its Day's commitment, and /api/games/ID.
 
-Options:
+Options
   -f, --proof FILE        a saved proof
   -c, --commitment FILE   the saved commitment of the game's Day
   -b, --box FILE          the saved box score
-  -h, --help              this help
+  -v, --version           print the version
+  -h, -?, --help          show this help
 
-It exits 0 when every link passes, 1 when one fails or the proof cannot be
-read, and 2 for a wrong command line.
+Exit
+  0  every link passed
+  1  a link failed, or the proof could not be read
+  2  the command line is wrong
+
+Examples
+  mud-verify https://mudball.one/games/1234
+  mud-verify -f proof.json -c commitment.json -b box.json
 `
+}
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr, http.DefaultClient))
@@ -49,7 +66,10 @@ func run(args []string, stdout, stderr io.Writer, client *http.Client) int {
 		a := args[i]
 		switch a {
 		case "-h", "-?", "--help", "help":
-			fmt.Fprint(stdout, usage)
+			fmt.Fprint(stdout, usage())
+			return 0
+		case "-v", "--version":
+			fmt.Fprintf(stdout, "mud-verify v%s\n", programVersion)
 			return 0
 		}
 		if !strings.HasPrefix(a, "-") {

@@ -113,3 +113,33 @@ func TestVerifyNamesTheSitesErrorAndWrongCommandLines(t *testing.T) {
 		t.Errorf("a missing file: %d %q", code, errOut)
 	}
 }
+
+// The version and help follow the shape the build checks, and the README's
+// Usage block is the help itself.
+func TestVersionAndHelpFollowTheBuildsShape(t *testing.T) {
+	for _, flag := range []string{"-v", "--version"} {
+		if out, errOut, code := verify(t, nil, flag); code != 0 || errOut != "" || out != "mud-verify v"+programVersion+"\n" {
+			t.Errorf("%s: %d %q %q", flag, code, out, errOut)
+		}
+	}
+	help, _, _ := verify(t, nil, "-h")
+	for _, flag := range []string{"-?", "--help", "help"} {
+		if out, errOut, code := verify(t, nil, flag); code != 0 || errOut != "" || out != help {
+			t.Errorf("%s: %d %q gave other help than -h", flag, code, errOut)
+		}
+	}
+	lines := strings.Split(help, "\n")
+	if lines[0] != "mud-verify v"+programVersion || lines[1] == "" || strings.HasSuffix(lines[1], ".") ||
+		lines[2] != "github.com/queone/mud-engine/cmd/mud-verify" || lines[3] != "" || lines[4] != "Usage" {
+		t.Errorf("help opens %q", lines[:5])
+	}
+	raw, err := os.ReadFile("README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, block, _ := strings.Cut(string(raw), "### Usage\n\n```text\n")
+	block, _, _ = strings.Cut(block, "```\n")
+	if block != help {
+		t.Errorf("README.md's Usage block differs from the help:\n%s", block)
+	}
+}
