@@ -7,7 +7,7 @@ explains each link and what a passing check proves.
 Run it at the version a game's proof names, with nothing to install:
 
 ```sh
-go run github.com/queone/mud-engine/cmd/mud-verify@v0.2.0 https://mudball.one/games/1234
+go run github.com/queone/mud-engine/cmd/mud-verify@v0.3.0 https://mudball.one/games/1234
 ```
 
 ## Help
@@ -15,7 +15,7 @@ go run github.com/queone/mud-engine/cmd/mud-verify@v0.2.0 https://mudball.one/ga
 ### Usage
 
 ```text
-mud-verify v0.2.2
+mud-verify v0.3.0
 Replay a Mud Baseball game and check every link of its proof
 github.com/queone/mud-engine/cmd/mud-verify
 

@@ -86,6 +86,7 @@ type Commitment struct {
 	InputsHash  string          `json:"inputs_hash"`
 	CommittedAt time.Time       `json:"committed_at"`
 	Inputs      json.RawMessage `json:"inputs"`
+	Anchor      *Anchor         `json:"anchor"` // nil for a Day committed without one
 }
 
 // BoxScore is the part of a served box score, /api/games/{id}, that a replay
@@ -143,6 +144,7 @@ func Version() string {
 type Link struct {
 	Name   string
 	OK     bool
+	None   bool // the link has nothing to check, such as a Day with no anchor
 	Detail string
 }
 
@@ -162,16 +164,28 @@ func (r Report) OK() bool {
 	return len(r.Links) > 0
 }
 
+// Anchored says the Day's commitment carried an anchor and it passed.
+func (r Report) Anchored() bool {
+	for _, l := range r.Links {
+		if l.Name == "anchor" {
+			return l.OK && !l.None
+		}
+	}
+	return false
+}
+
 // Verifier checks a beacon round's signature and answers its randomness;
 // beacon.Verify is the real one.
 type Verifier func(round uint64, signature string) ([]byte, error)
 
 // Check replays a game from its proof and checks every link: the engine
-// model, the proof against its Day's commitment, the Day's inputs against
+// model, the proof against its Day's commitment, the commitment's anchor
+// under trust and its round after the anchor's time, the Day's inputs against
 // their hash, the beacon round's signature and randomness, the seed, and the
 // replay against the served box score. A proof from another engine model
-// names the verifier version that replays it instead.
-func Check(p Proof, c Commitment, box BoxScore, verify Verifier) Report {
+// names the verifier version that replays it instead. A Day with no anchor
+// reports that link as none, and the rest still decide the verdict.
+func Check(p Proof, c Commitment, box BoxScore, verify Verifier, trust Trust) Report {
 	r := Report{GameID: p.GameID}
 	add := func(name string, ok bool, detail string, args ...any) {
 		r.Links = append(r.Links, Link{Name: name, OK: ok, Detail: fmt.Sprintf(detail, args...)})
@@ -193,6 +207,16 @@ func Check(p Proof, c Commitment, box BoxScore, verify Verifier) Report {
 		add("commitment", false, "the proof names inputs hash %s, the commitment %s", p.InputsHash, c.InputsHash)
 	default:
 		add("commitment", true, "season %d Day %d, round %d, committed %s", c.Season, c.Day, c.Round, c.CommittedAt.UTC().Format(time.RFC3339))
+	}
+
+	if c.Anchor == nil {
+		r.Links = append(r.Links, Link{Name: "anchor", OK: true, None: true, Detail: "the Day's commitment has no anchor"})
+	} else if at, err := VerifyAnchor(*c.Anchor, p.CircuitSeed, c.Season, c.Day, c.InputsHash, trust); err != nil {
+		add("anchor", false, "%v", err)
+	} else if published := beacon.TimeOf(c.Round); !published.After(at) {
+		add("anchor", false, "round %d was published %s, not after the anchor's time %s", c.Round, published.UTC().Format(time.RFC3339), at.Format(time.RFC3339))
+	} else {
+		add("anchor", true, "timestamped %s by %d authorities and logged at %s; round %d came after", at.Format(time.RFC3339), len(c.Anchor.Timestamps), c.Anchor.Log.URL, c.Round)
 	}
 
 	inputs, inputsOK := gameInputs(p, c, add)

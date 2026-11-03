@@ -9,13 +9,17 @@ public checksum database (sum.golang.org) records each version's exact content.
 Pick a game on the site and run the verifier at the version its proof names:
 
 ```sh
-go run github.com/queone/mud-engine/cmd/mud-verify@v0.2.0 https://mudball.one/games/1234
+go run github.com/queone/mud-engine/cmd/mud-verify@v0.3.0 https://mudball.one/games/1234
 ```
 
-It fetches the game's proof, its Day's commitment, and its box score, and checks six links:
+It fetches the game's proof, its Day's commitment, and its box score, and checks seven links:
 
 - engine: the game used this verifier's engine model; a game from another model names the version that replays it.
 - commitment: the game's round and inputs hash are the ones its Day committed to.
+- anchor: the commitment existed outside the site before its round: two RFC 3161 timestamp authorities, of
+  Sigstore, DigiCert, and FreeTSA, signed its digest, the public Rekor v2 log holds an entry for it under the site's
+  anchor key, and the round was published after the later timestamp. A Day committed without an anchor shows this
+  link as `none`, and the verdict reads `verified, not anchored`.
 - inputs: the Day's inputs hash to that commitment, and the game's inputs are its slot among them.
 - beacon: the drand quicknet round's signature verifies against the chain's public key, and the randomness is the
   SHA-256 of the signature.
@@ -33,14 +37,18 @@ BOXSCORE` checks saved copies of the three answers offline.
   threshold of the League of Entropy's members (https://drand.love).
 - The game's result follows from its committed inputs and that round, with this engine.
 - A changed result, inputs, or round no longer verifies: results are tamper-evident, not tamper-proof.
-- The commitment is stored by the site; anchoring it outside the site is still to come.
+- An anchored commitment existed outside the site before its round, so even a Day played late, after an outage
+  or in a new circuit's catch-up, was unknowable when committed.
+- The log makes a second commitment for the same Day public, but finding one means reading the log for every entry
+  under the site's key; the verifier checks only the entry the site serves.
 - Rosters, lineups, and accounts are the site's; the proof covers how a game played from its inputs.
 
 ## Packages
 
 - `engine`: one game's simulation from two clubs and a seed.
 - `beacon`: drand quicknet constants, the pinned public key, round verification, and a relay client.
-- `proof`: the input format, the inputs hash, the shapes the site serves, `Fetch`, and `Check`.
+- `proof`: the input format, the inputs hash, the shapes the site serves, `Fetch`, `Check`, the anchor's
+  statement and checks, and the pinned trust: the log's key and the timestamp authorities' roots.
 - `cmd/mud-verify`: the verifier; [its page](cmd/mud-verify/README.md) holds its full help.
 
 ## Build

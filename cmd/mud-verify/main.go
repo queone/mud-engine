@@ -20,7 +20,7 @@ import (
 
 // programVersion is the verifier's release version; the build checks it, and
 // release prep bumps it.
-const programVersion = "0.2.2"
+const programVersion = "0.3.0"
 
 // usage is the help, in the shape the build's help probe checks, and the text
 // of the Usage block in cmd/mud-verify/README.md.
@@ -125,20 +125,27 @@ func run(args []string, stdout, stderr io.Writer, client *http.Client) int {
 		return 1
 	}
 
-	report := proof.Check(p, c, box, beacon.Verify)
+	report := proof.Check(p, c, box, beacon.Verify, proof.DefaultTrust())
 	fmt.Fprintf(stdout, "game %d, %s season %d Day %d, slot %d; verifier engine model %s\n", p.GameID, p.World.Name, p.Season, p.Day, p.Slot, engine.Version)
 	for _, l := range report.Links {
 		verdict := "passed"
-		if !l.OK {
+		switch {
+		case l.None:
+			verdict = "none"
+		case !l.OK:
 			verdict = "FAILED"
 		}
 		fmt.Fprintf(stdout, "  %-10s %s: %s\n", l.Name, verdict, l.Detail)
 	}
-	if !report.OK() {
+	switch {
+	case !report.OK():
 		fmt.Fprintln(stdout, "not verified")
 		return 1
+	case !report.Anchored():
+		fmt.Fprintln(stdout, "verified, not anchored")
+	default:
+		fmt.Fprintln(stdout, "verified")
 	}
-	fmt.Fprintln(stdout, "verified")
 	return 0
 }
 

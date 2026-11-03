@@ -54,7 +54,7 @@ func TestVerifyPassesAnUntouchedGameFromEitherAddress(t *testing.T) {
 	ts := site(t, p, c, box)
 	for _, path := range []string{"/games/7", "/api/games/7"} {
 		out, errOut, code := verify(t, ts.Client(), ts.URL+path)
-		if code != 0 || errOut != "" || !strings.HasSuffix(out, "\nverified\n") || strings.Count(out, " passed: ") != 6 {
+		if code != 0 || errOut != "" || !strings.HasSuffix(out, "\nverified, not anchored\n") || strings.Count(out, " passed: ") != 6 || !strings.Contains(out, "  anchor     none: ") {
 			t.Errorf("%s: %d %q %q", path, code, out, errOut)
 		}
 	}
@@ -90,7 +90,7 @@ func TestVerifyFailsAnAlteredGameOnlineAndOffline(t *testing.T) {
 		raw, _ := json.Marshal(v)
 		_ = os.WriteFile(filepath.Join(dir, name), raw, 0o600)
 	}
-	if out, _, code := verify(t, nil, "-f", filepath.Join(dir, "proof.json"), "-c", filepath.Join(dir, "commitment.json"), "-b", filepath.Join(dir, "box.json")); code != 0 || !strings.HasSuffix(out, "\nverified\n") {
+	if out, _, code := verify(t, nil, "-f", filepath.Join(dir, "proof.json"), "-c", filepath.Join(dir, "commitment.json"), "-b", filepath.Join(dir, "box.json")); code != 0 || !strings.HasSuffix(out, "\nverified, not anchored\n") {
 		t.Errorf("offline untouched: %d %q", code, out)
 	}
 }

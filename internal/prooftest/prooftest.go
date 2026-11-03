@@ -11,6 +11,7 @@ import (
 	"github.com/queone/mud-engine/beacon"
 	"github.com/queone/mud-engine/engine"
 	"github.com/queone/mud-engine/proof"
+	"github.com/queone/mud-engine/proof/notary"
 )
 
 // A real quicknet round, recorded from api.drand.sh.
@@ -119,4 +120,23 @@ func club(name, prefix string, rating int) engine.Club {
 	c.Bullpen = engine.Bullpen{Closer: pitcher(prefix + "cl"), Setup: pitcher(prefix + "su"),
 		Others: []engine.Player{pitcher(prefix + "r1"), pitcher(prefix + "r2"), pitcher(prefix + "r3")}}
 	return c
+}
+
+// AnchoredGame is Game with its Day's commitment anchored a day before its
+// round, and the notary whose Trust checks the anchor.
+func AnchoredGame() (proof.Proof, proof.Commitment, proof.BoxScore, *notary.Notary, error) {
+	p, c, box, err := Game()
+	if err != nil {
+		return p, c, box, nil, err
+	}
+	n, err := notary.New()
+	if err != nil {
+		return p, c, box, nil, err
+	}
+	a, err := n.Anchor(proof.Statement(Seed, Season, Day, c.InputsHash), c.CommittedAt)
+	if err != nil {
+		return p, c, box, nil, err
+	}
+	c.Anchor = &a
+	return p, c, box, n, nil
 }
