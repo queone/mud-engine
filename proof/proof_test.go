@@ -128,7 +128,7 @@ func TestGameAddressTakesThePageAndTheAPIForm(t *testing.T) {
 			t.Errorf("%s: %q %d %v", raw, base, id, err)
 		}
 	}
-	for _, raw := range []string{"mudball.one/games/12", "https://mudball.one/circuits/1", "https://mudball.one/games/x", "https://mudball.one/games/0"} {
+	for _, raw := range []string{"mudball.one/games/12", "https://mudball.one/baseball leagues/1", "https://mudball.one/games/x", "https://mudball.one/games/0"} {
 		if _, _, err := proof.GameAddress(raw); err == nil || !strings.Contains(err.Error(), "not a game's address") {
 			t.Errorf("%s: %v", raw, err)
 		}

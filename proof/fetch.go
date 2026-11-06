@@ -46,7 +46,7 @@ func Fetch(ctx context.Context, client *http.Client, address string) (Proof, Com
 	if err := getJSON(ctx, client, fmt.Sprintf("%s/api/games/%d/proof", base, id), &p); err != nil {
 		return p, c, box, err
 	}
-	if err := getJSON(ctx, client, fmt.Sprintf("%s/api/circuits/%d/seasons/%d/days/%d/commitment", base, p.World.ID, p.Season, p.Day), &c); err != nil {
+	if err := getJSON(ctx, client, fmt.Sprintf("%s/api/baseball-leagues/%d/seasons/%d/days/%d/commitment", base, p.BaseballLeague.ID, p.Season, p.Day), &c); err != nil {
 		return p, c, box, err
 	}
 	if err := getJSON(ctx, client, fmt.Sprintf("%s/api/games/%d", base, id), &box); err != nil {

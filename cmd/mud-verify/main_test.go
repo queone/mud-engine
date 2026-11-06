@@ -28,7 +28,7 @@ func site(t *testing.T, p proof.Proof, c proof.Commitment, box proof.BoxScore) *
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc(fmt.Sprintf("GET /api/games/%d/proof", p.GameID), serve(p))
-	mux.HandleFunc(fmt.Sprintf("GET /api/circuits/%d/seasons/%d/days/%d/commitment", c.World.ID, c.Season, c.Day), serve(c))
+	mux.HandleFunc(fmt.Sprintf("GET /api/baseball-leagues/%d/seasons/%d/days/%d/commitment", c.BaseballLeague.ID, c.Season, c.Day), serve(c))
 	mux.HandleFunc(fmt.Sprintf("GET /api/games/%d", p.GameID), serve(box))
 	mux.HandleFunc("GET /api/games/404/proof", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)

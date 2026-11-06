@@ -1,5 +1,5 @@
 // Package proof checks a game against its proof. A game's result follows
-// from its circuit's public seed, its season and game number, a drand beacon
+// from its baseball league's public seed, its season and game number, a drand beacon
 // round, and its inputs, the two clubs as the engine received them; the Day's
 // commitment is the hash of every game's inputs, stored before the Day's
 // round existed. Check replays the game from those and compares every link
@@ -42,8 +42,8 @@ func HashInputs(inputs []byte) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
-// Circuit names the circuit a game belongs to.
-type Circuit struct {
+// BaseballLeague names the baseball league a game belongs to.
+type BaseballLeague struct {
 	ID   int64  `json:"id"`
 	Name string `json:"name"`
 }
@@ -51,42 +51,42 @@ type Circuit struct {
 // Proof is everything one game's result follows from, as the site serves it
 // at /api/games/{id}/proof.
 type Proof struct {
-	GameID      int64           `json:"game_id"`
-	World       Circuit         `json:"circuit"`
-	Season      uint32          `json:"season"`
-	Day         int             `json:"day"`
-	Slot        int             `json:"slot"`
-	Game        uint64          `json:"game"` // Day*16+slot, the seed's game number
-	CircuitSeed uint64          `json:"circuit_seed"`
-	Derivation  string          `json:"derivation"`
-	Chain       string          `json:"chain"`
-	Scheme      string          `json:"scheme"`
-	Round       uint64          `json:"round"`
-	RoundAt     time.Time       `json:"round_at"`
-	Signature   string          `json:"signature"`
-	Randomness  string          `json:"randomness"`
-	InputsHash  string          `json:"inputs_hash"`
-	CommittedAt time.Time       `json:"committed_at"`
-	Inputs      json.RawMessage `json:"inputs"`
-	Engine      string          `json:"engine_version"`
+	GameID             int64           `json:"game_id"`
+	BaseballLeague     BaseballLeague  `json:"baseball_league"`
+	Season             uint32          `json:"season"`
+	Day                int             `json:"day"`
+	Slot               int             `json:"slot"`
+	Game               uint64          `json:"game"` // Day*16+slot, the seed's game number
+	BaseballLeagueSeed uint64          `json:"baseball_league_seed"`
+	Derivation         string          `json:"derivation"`
+	Chain              string          `json:"chain"`
+	Scheme             string          `json:"scheme"`
+	Round              uint64          `json:"round"`
+	RoundAt            time.Time       `json:"round_at"`
+	Signature          string          `json:"signature"`
+	Randomness         string          `json:"randomness"`
+	InputsHash         string          `json:"inputs_hash"`
+	CommittedAt        time.Time       `json:"committed_at"`
+	Inputs             json.RawMessage `json:"inputs"`
+	Engine             string          `json:"engine_version"`
 	// Module is the engine module and version the site ran, as PATH@VERSION.
 	Module string `json:"module"`
 }
 
 // Commitment is a Day's commitment as the site serves it at
-// /api/circuits/{id}/seasons/{n}/days/{d}/commitment: the beacon round bound
+// /api/baseball-leagues/{id}/seasons/{n}/days/{d}/commitment: the beacon round bound
 // to the Day, the hash of the Day's inputs, when it was stored, and the
 // inputs themselves, so anyone can recompute the hash.
 type Commitment struct {
-	World       Circuit         `json:"circuit"`
-	Season      uint32          `json:"season"`
-	Day         int             `json:"day"`
-	Round       uint64          `json:"round"`
-	RoundAt     time.Time       `json:"round_at"`
-	InputsHash  string          `json:"inputs_hash"`
-	CommittedAt time.Time       `json:"committed_at"`
-	Inputs      json.RawMessage `json:"inputs"`
-	Anchor      *Anchor         `json:"anchor"` // nil for a Day committed without one
+	BaseballLeague BaseballLeague  `json:"baseball_league"`
+	Season         uint32          `json:"season"`
+	Day            int             `json:"day"`
+	Round          uint64          `json:"round"`
+	RoundAt        time.Time       `json:"round_at"`
+	InputsHash     string          `json:"inputs_hash"`
+	CommittedAt    time.Time       `json:"committed_at"`
+	Inputs         json.RawMessage `json:"inputs"`
+	Anchor         *Anchor         `json:"anchor"` // nil for a Day committed without one
 }
 
 // BoxScore is the part of a served box score, /api/games/{id}, that a replay
@@ -199,8 +199,8 @@ func Check(p Proof, c Commitment, box BoxScore, verify Verifier, trust Trust) Re
 	}
 
 	switch {
-	case c.World.ID != p.World.ID || c.Season != p.Season || c.Day != p.Day:
-		add("commitment", false, "the commitment is for circuit %d season %d Day %d, not the game's circuit %d season %d Day %d", c.World.ID, c.Season, c.Day, p.World.ID, p.Season, p.Day)
+	case c.BaseballLeague.ID != p.BaseballLeague.ID || c.Season != p.Season || c.Day != p.Day:
+		add("commitment", false, "the commitment is for baseball league %d season %d Day %d, not the game's baseball league %d season %d Day %d", c.BaseballLeague.ID, c.Season, c.Day, p.BaseballLeague.ID, p.Season, p.Day)
 	case c.Round != p.Round:
 		add("commitment", false, "the game used round %d, not the Day's bound round %d", p.Round, c.Round)
 	case c.InputsHash != p.InputsHash:
@@ -211,7 +211,7 @@ func Check(p Proof, c Commitment, box BoxScore, verify Verifier, trust Trust) Re
 
 	if c.Anchor == nil {
 		r.Links = append(r.Links, Link{Name: "anchor", OK: true, None: true, Detail: "the Day's commitment has no anchor"})
-	} else if at, err := VerifyAnchor(*c.Anchor, p.CircuitSeed, c.Season, c.Day, c.InputsHash, trust); err != nil {
+	} else if at, err := VerifyAnchor(*c.Anchor, p.BaseballLeagueSeed, c.Season, c.Day, c.InputsHash, trust); err != nil {
 		add("anchor", false, "%v", err)
 	} else if published := beacon.TimeOf(c.Round); !published.After(at) {
 		add("anchor", false, "round %d was published %s, not after the anchor's time %s", c.Round, published.UTC().Format(time.RFC3339), at.Format(time.RFC3339))
@@ -236,7 +236,7 @@ func Check(p Proof, c Commitment, box BoxScore, verify Verifier, trust Trust) Re
 
 	seedOK := p.Derivation == engine.DerivationBeacon && p.Game == uint64(p.Day*16+p.Slot)
 	if seedOK {
-		add("seed", true, "%s with circuit seed %d, season %d, game %d", p.Derivation, p.CircuitSeed, p.Season, p.Game)
+		add("seed", true, "%s with baseball league seed %d, season %d, game %d", p.Derivation, p.BaseballLeagueSeed, p.Season, p.Game)
 	} else {
 		add("seed", false, "the proof names derivation %q and game %d; the beacon derivation %q and game %d (Day*16+slot) were expected", p.Derivation, p.Game, engine.DerivationBeacon, p.Day*16+p.Slot)
 	}
@@ -245,7 +245,7 @@ func Check(p Proof, c Commitment, box BoxScore, verify Verifier, trust Trust) Re
 		add("replay", false, "not replayed until the links above pass")
 		return r
 	}
-	res, err := engine.Simulate(inputs.Home, inputs.Away, engine.DeriveBeaconSeed(p.CircuitSeed, p.Season, p.Game, randomness))
+	res, err := engine.Simulate(inputs.Home, inputs.Away, engine.DeriveBeaconSeed(p.BaseballLeagueSeed, p.Season, p.Game, randomness))
 	if err != nil {
 		add("replay", false, "the replay failed: %v", err)
 		return r

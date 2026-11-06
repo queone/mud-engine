@@ -21,14 +21,14 @@ const (
 	Randomness = "b174b768d659aad91d60b6cfc867e54ec7659ca0ce13c91c92359892f0e364ef"
 )
 
-// The game's place: game 7, circuit 1, season 1, Day 3, slot 2.
+// The game's place: game 7, baseball league 1, season 1, Day 3, slot 2.
 const (
-	GameID  = 7
-	Circuit = 1
-	Season  = 1
-	Day     = 3
-	Slot    = 2
-	Seed    = 42
+	GameID         = 7
+	BaseballLeague = 1
+	Season         = 1
+	Day            = 3
+	Slot           = 2
+	Seed           = 42
 )
 
 // Game builds the game's proof, its Day's commitment, and its box score; the
@@ -60,12 +60,12 @@ func Game() (proof.Proof, proof.Commitment, proof.BoxScore, error) {
 		return proof.Proof{}, proof.Commitment{}, proof.BoxScore{}, err
 	}
 	committed := beacon.TimeOf(Round).Add(-24 * time.Hour).UTC()
-	circuit := proof.Circuit{ID: Circuit, Name: "MFB"}
-	p := proof.Proof{GameID: GameID, World: circuit, Season: Season, Day: Day, Slot: Slot, Game: game, CircuitSeed: Seed,
+	bl := proof.BaseballLeague{ID: BaseballLeague, Name: "MFB"}
+	p := proof.Proof{GameID: GameID, BaseballLeague: bl, Season: Season, Day: Day, Slot: Slot, Game: game, BaseballLeagueSeed: Seed,
 		Derivation: engine.DerivationBeacon, Chain: beacon.ChainHash, Scheme: beacon.Scheme, Round: Round, RoundAt: beacon.TimeOf(Round),
 		Signature: Signature, Randomness: Randomness, InputsHash: hash, CommittedAt: committed, Inputs: own, Engine: engine.Version,
 		Module: proof.Path + "@v0.1.0"}
-	c := proof.Commitment{World: circuit, Season: Season, Day: Day, Round: Round, RoundAt: beacon.TimeOf(Round), InputsHash: hash, CommittedAt: committed, Inputs: inputs}
+	c := proof.Commitment{BaseballLeague: bl, Season: Season, Day: Day, Round: Round, RoundAt: beacon.TimeOf(Round), InputsHash: hash, CommittedAt: committed, Inputs: inputs}
 	return p, c, Box(res, day[Slot]), nil
 }
 

@@ -23,7 +23,7 @@ It fetches the game's proof, its Day's commitment, and its box score, and checks
 - inputs: the Day's inputs hash to that commitment, and the game's inputs are its slot among them.
 - beacon: the drand quicknet round's signature verifies against the chain's public key, and the randomness is the
   SHA-256 of the signature.
-- seed: the seed derives from the circuit's public seed, the season, the game number (Day*16+slot), and the
+- seed: the seed derives from the baseball league's public seed, the season, the game number (Day*16+slot), and the
   round's randomness.
 - replay: the engine replays the game from the inputs and the seed, and every inning, batter line, and pitcher line
   matches the box score.
@@ -38,7 +38,7 @@ BOXSCORE` checks saved copies of the three answers offline.
 - The game's result follows from its committed inputs and that round, with this engine.
 - A changed result, inputs, or round no longer verifies: results are tamper-evident, not tamper-proof.
 - An anchored commitment existed outside the site before its round, so even a Day played late, after an outage
-  or in a new circuit's catch-up, was unknowable when committed.
+  or in a new baseball league's catch-up, was unknowable when committed.
 - The log makes a second commitment for the same Day public, but finding one means reading the log for every entry
   under the site's key; the verifier checks only the entry the site serves.
 - Rosters, lineups, and accounts are the site's; the proof covers how a game played from its inputs.

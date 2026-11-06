@@ -50,15 +50,15 @@ type LogEntry struct {
 	Entry json.RawMessage `json:"entry"`
 }
 
-// Statement is what a Day's anchor stands for: the circuit's public seed,
+// Statement is what a Day's anchor stands for: the baseball league's public seed,
 // the season, the Day, and the Day's inputs hash, as compact JSON.
-func Statement(circuitSeed uint64, season uint32, day int, inputsHash string) []byte {
+func Statement(baseballLeagueSeed uint64, season uint32, day int, inputsHash string) []byte {
 	raw, _ := json.Marshal(struct {
-		CircuitSeed uint64 `json:"circuit_seed"`
-		Season      uint32 `json:"season"`
-		Day         int    `json:"day"`
-		InputsHash  string `json:"inputs_hash"`
-	}{circuitSeed, season, day, inputsHash})
+		BaseballLeagueSeed uint64 `json:"baseball_league_seed"`
+		Season             uint32 `json:"season"`
+		Day                int    `json:"day"`
+		InputsHash         string `json:"inputs_hash"`
+	}{baseballLeagueSeed, season, day, inputsHash})
 	return raw
 }
 
@@ -66,8 +66,8 @@ func Statement(circuitSeed uint64, season uint32, day int, inputsHash string) []
 // its digest, timestamps from at least two pinned authorities, and the log
 // entry. It answers the later timestamp's time, before which the commitment
 // existed.
-func VerifyAnchor(a Anchor, circuitSeed uint64, season uint32, day int, inputsHash string, trust Trust) (time.Time, error) {
-	want := Statement(circuitSeed, season, day, inputsHash)
+func VerifyAnchor(a Anchor, baseballLeagueSeed uint64, season uint32, day int, inputsHash string, trust Trust) (time.Time, error) {
+	want := Statement(baseballLeagueSeed, season, day, inputsHash)
 	if a.Statement != string(want) {
 		return time.Time{}, fmt.Errorf("the anchor's statement is %s, not this Day's %s", a.Statement, want)
 	}
