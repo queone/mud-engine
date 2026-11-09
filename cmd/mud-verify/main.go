@@ -20,7 +20,7 @@ import (
 
 // programVersion is the verifier's release version; the build checks it, and
 // release prep bumps it.
-const programVersion = "0.4.0"
+const programVersion = "0.4.1"
 
 // usage is the help, in the shape the build's help probe checks, and the text
 // of the Usage block in cmd/mud-verify/README.md.

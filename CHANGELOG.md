@@ -3,6 +3,7 @@
 | Version | Summary |
 |---------|---------|
 | Unreleased | |
+| 0.4.1 | build.sh checks Markdown for bare AC, AT, and IE identifiers |
 | 0.4.0 | Proof names the baseball league: fields, commitment route, and anchor statement |
 | 0.3.0 | Check verifies each Day's anchor: two timestamp authorities and a Rekor v2 entry |
 | 0.2.2 | build.sh reads the module path outside a workspace for coverage |
