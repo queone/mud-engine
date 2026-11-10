@@ -3,6 +3,7 @@
 | Version | Summary |
 |---------|---------|
 | Unreleased | |
+| 0.5.0 | Box score lines match by engine_player; saved older box scores still verify |
 | 0.4.1 | build.sh checks Markdown for bare AC, AT, and IE identifiers |
 | 0.4.0 | Proof names the baseball league: fields, commitment route, and anchor statement |
 | 0.3.0 | Check verifies each Day's anchor: two timestamp authorities and a Rekor v2 entry |

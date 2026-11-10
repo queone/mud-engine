@@ -144,6 +144,122 @@ func TestRunCommandNamesTheProofsVersion(t *testing.T) {
 	}
 }
 
+// The advice for a proof from another engine model names the verifier
+// version the proof names, and never this verifier's own version, another
+// module's, or none.
+func TestTheEngineAdviceNeverNamesTheRunningVerifier(t *testing.T) {
+	for module, command := range map[string]bool{
+		proof.Path + "@v0.1.0":             true,
+		proof.Path + "@" + proof.Version(): false,
+		"example.com/other@v0.1.0":         false,
+		proof.Path:                         false,
+		"":                                 false,
+	} {
+		p, c, box := game(t)
+		p.Engine, p.Module = "1", module
+		l := link(t, proof.Check(p, c, box, beacon.Verify, proof.DefaultTrust()), "engine")
+		named := strings.Contains(l.Detail, "go run ")
+		if l.OK || named != command || (!command && !strings.HasSuffix(l.Detail, "the proof names no other verifier version to run")) {
+			t.Errorf("module %q: %q", module, l.Detail)
+		}
+	}
+}
+
+// decoded is a box score as a reader gets it: written as JSON text and read
+// back, so the reader decodes the JSON types the text carries.
+func decoded(t *testing.T, box proof.BoxScore) (proof.BoxScore, string) {
+	t.Helper()
+	raw, err := json.Marshal(box)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back proof.BoxScore
+	if err := json.Unmarshal(raw, &back); err != nil {
+		t.Fatalf("reading %s: %v", raw, err)
+	}
+	return back, string(raw)
+}
+
+// A box score whose player is a number beside a string engine_player, as a
+// site that numbers its players serves it, and one saved before
+// engine_player, with the id in a string player, both pass every link.
+func TestBoxScoresMatchByEnginePlayerOrAnOlderStringPlayer(t *testing.T) {
+	p, c, box := game(t)
+	numbered, text := decoded(t, prooftest.Numbered(box))
+	if !strings.Contains(text, `"player":1,`) || !strings.Contains(text, `"engine_player":"`) {
+		t.Fatalf("the numbered box score's JSON: %s", text)
+	}
+	if r := proof.Check(p, c, numbered, beacon.Verify, proof.DefaultTrust()); !r.OK() {
+		t.Errorf("a numbered box score fails: %+v", r.Links)
+	}
+	older, text := decoded(t, prooftest.Legacy(box))
+	if strings.Contains(text, "engine_player") || !strings.Contains(text, `"player":"`) {
+		t.Fatalf("the older box score's JSON: %s", text)
+	}
+	if r := proof.Check(p, c, older, beacon.Verify, proof.DefaultTrust()); !r.OK() {
+		t.Errorf("an older box score fails: %+v", r.Links)
+	}
+}
+
+// A line the replay cannot be matched to fails the replay link alone, naming
+// its side, kind, and number and no verifier version, and the game is not
+// verified; an engine_player that is present but not a nonempty string never
+// falls back to a valid older player.
+func TestALineWithNoUsableIDFailsTheReplayLinkAlone(t *testing.T) {
+	cases := []struct {
+		name         string
+		pitcher      bool
+		enginePlayer string // absent when empty
+		player       string // absent when empty; "id" is the line's own id as a string
+		want         string
+	}{
+		{"a number in player and no engine_player", false, "", "5", "the home side's batter line 1 names no engine_player to match the replay"},
+		{"neither field", true, "", "", "the home side's pitcher line 1 names no engine_player to match the replay"},
+		{"an empty engine_player", false, `""`, "id", `the home side's batter line 1 has engine_player "", not a player's id`},
+		{"a null engine_player", false, "null", "id", "the home side's batter line 1 has engine_player null, not a player's id"},
+		{"a number in engine_player", true, "7", "id", "the home side's pitcher line 1 has engine_player 7, not a player's id"},
+		{"a boolean engine_player", false, "true", "id", "the home side's batter line 1 has engine_player true, not a player's id"},
+		{"an object engine_player", false, `{"id": "x"}`, "id", "the home side's batter line 1 has engine_player an object, not a player's id"},
+		{"an array engine_player", false, `["x"]`, "id", "the home side's batter line 1 has engine_player an array, not a player's id"},
+		{"an engine_player the replay lacks", false, `"zz"`, "", "batter zz's line differs from the replay's"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p, c, box := game(t)
+			box = prooftest.Numbered(box)
+			enginePlayer, player := &box.Home.Batting[0].EnginePlayer, &box.Home.Batting[0].Player
+			if tc.pitcher {
+				enginePlayer, player = &box.Home.Pitching[0].EnginePlayer, &box.Home.Pitching[0].Player
+			}
+			own := *enginePlayer
+			*enginePlayer, *player = nil, nil
+			if tc.enginePlayer != "" {
+				*enginePlayer = json.RawMessage(tc.enginePlayer)
+			}
+			switch tc.player {
+			case "":
+			case "id":
+				*player = own
+			default:
+				*player = json.RawMessage(tc.player)
+			}
+			read, text := decoded(t, box)
+			r := proof.Check(p, c, read, beacon.Verify, proof.DefaultTrust())
+			if r.OK() {
+				t.Fatalf("the game verifies: %s", text)
+			}
+			if replay := link(t, r, "replay"); replay.OK || !strings.Contains(replay.Detail, tc.want) || strings.Contains(replay.Detail, "go run") {
+				t.Errorf("replay link %q, want %q and no verifier version", replay.Detail, tc.want)
+			}
+			for _, l := range r.Links {
+				if l.Name != "replay" && !l.OK {
+					t.Errorf("the %s link fails too: %s", l.Name, l.Detail)
+				}
+			}
+		})
+	}
+}
+
 func anchored(t *testing.T) (proof.Proof, proof.Commitment, proof.BoxScore, *notary.Notary) {
 	t.Helper()
 	p, c, box, n, err := prooftest.AnchoredGame()

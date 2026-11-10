@@ -4,18 +4,21 @@
 seed, the Day's inputs against their commitment, and every line of the box score. The [module README](../../README.md)
 explains each link and what a passing check proves.
 
-Run it at the version a game's proof names, with nothing to install:
+Run the newest version, with nothing to install:
 
 ```sh
-go run github.com/queone/mud-engine/cmd/mud-verify@v0.3.0 https://mudball.one/games/1234
+go run github.com/queone/mud-engine/cmd/mud-verify@latest https://mudball.one/games/1234
 ```
+
+The newest version replays engine model 2 and reads box scores in both shapes the site has served, so it checks
+every game played so far, online or from saved copies.
 
 ## Help
 
 ### Usage
 
 ```text
-mud-verify v0.4.1
+mud-verify v0.5.0
 Replay a Mud Baseball game and check every link of its proof
 github.com/queone/mud-engine/cmd/mud-verify
 

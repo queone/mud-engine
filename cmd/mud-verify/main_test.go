@@ -95,6 +95,82 @@ func TestVerifyFailsAnAlteredGameOnlineAndOffline(t *testing.T) {
 	}
 }
 
+// save writes a game's three answers as the files mud-verify -f -c -b reads,
+// and answers those arguments; the box score's file is the last.
+func save(t *testing.T, p proof.Proof, c proof.Commitment, box proof.BoxScore) []string {
+	t.Helper()
+	dir := t.TempDir()
+	var args []string
+	for _, f := range []struct {
+		flag, name string
+		v          any
+	}{{"-f", "proof.json", p}, {"-c", "commitment.json", c}, {"-b", "box.json", box}} {
+		raw, err := json.MarshalIndent(f.v, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(dir, f.name)
+		if err := os.WriteFile(path, raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		args = append(args, f.flag, path)
+	}
+	return args
+}
+
+// A box score whose player is a number beside a string engine_player, read
+// from the JSON a site serves, verifies online and offline, and so does one
+// saved before engine_player, with the id in a string player.
+func TestVerifyReadsANumberedBoxScoreAndASavedOlderOne(t *testing.T) {
+	p, c, box, err := prooftest.Game()
+	if err != nil {
+		t.Fatal(err)
+	}
+	numbered := prooftest.Numbered(box)
+	ts := site(t, p, c, numbered)
+	if out, errOut, code := verify(t, ts.Client(), ts.URL+"/games/7"); code != 0 || errOut != "" || !strings.HasSuffix(out, "\nverified, not anchored\n") {
+		t.Errorf("online: %d %q %q", code, out, errOut)
+	}
+	for _, tc := range []struct {
+		name      string
+		box       proof.BoxScore
+		has, lack string
+	}{
+		{"numbered", numbered, `"player": 1,`, ""},
+		{"older", prooftest.Legacy(box), `"player": "`, "engine_player"},
+	} {
+		args := save(t, p, c, tc.box)
+		raw, _ := os.ReadFile(args[len(args)-1])
+		if !strings.Contains(string(raw), tc.has) || (tc.lack != "" && strings.Contains(string(raw), tc.lack)) {
+			t.Fatalf("the saved %s box score: %s", tc.name, raw)
+		}
+		if out, errOut, code := verify(t, nil, args...); code != 0 || !strings.HasSuffix(out, "\nverified, not anchored\n") {
+			t.Errorf("the saved %s box score offline: %d %q %q", tc.name, code, out, errOut)
+		}
+	}
+}
+
+// An engine_player that is not a player's id fails its line's replay check,
+// online and offline; the other links still report, and the game is not
+// verified.
+func TestVerifyFailsAnUnusableEnginePlayerOnItsLine(t *testing.T) {
+	p, c, box, err := prooftest.Game()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad := prooftest.Numbered(box)
+	bad.Away.Batting[1].EnginePlayer = json.RawMessage("7")
+	ts := site(t, p, c, bad)
+	out, errOut, code := verify(t, ts.Client(), ts.URL+"/games/7")
+	if code != 1 || errOut != "" || !strings.Contains(out, "  replay     FAILED: the away side's batter line 2 has engine_player 7, not a player's id\n") ||
+		strings.Count(out, " passed: ") != 5 || !strings.HasSuffix(out, "\nnot verified\n") {
+		t.Errorf("online: %d %q %q", code, out, errOut)
+	}
+	if offline, _, code := verify(t, nil, save(t, p, c, bad)...); code != 1 || offline != out {
+		t.Errorf("offline: %d %q, online gave %q", code, offline, out)
+	}
+}
+
 func TestVerifyNamesTheSitesErrorAndWrongCommandLines(t *testing.T) {
 	p, c, box, _ := prooftest.Game()
 	ts := site(t, p, c, box)

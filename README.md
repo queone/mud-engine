@@ -6,11 +6,14 @@ public checksum database (sum.golang.org) records each version's exact content.
 
 ## Check a game
 
-Pick a game on the site and run the verifier at the version its proof names:
+Pick a game on the site and run the newest verifier:
 
 ```sh
-go run github.com/queone/mud-engine/cmd/mud-verify@v0.3.0 https://mudball.one/games/1234
+go run github.com/queone/mud-engine/cmd/mud-verify@latest https://mudball.one/games/1234
 ```
+
+The newest verifier replays engine model 2, the model of every game so far. A proof from another model names the
+verifier version that replays it, when it names one other than the verifier running.
 
 It fetches the game's proof, its Day's commitment, and its box score, and checks seven links:
 
@@ -26,10 +29,13 @@ It fetches the game's proof, its Day's commitment, and its box score, and checks
 - seed: the seed derives from the baseball league's public seed, the season, the game number (Day*16+slot), and the
   round's randomness.
 - replay: the engine replays the game from the inputs and the seed, and every inning, batter line, and pitcher line
-  matches the box score.
+  matches the box score. Each box score line names its player for the replay by `engine_player`, the player's id in
+  the game's inputs; a box score saved before `engine_player` existed names it by a string `player` instead. A line
+  whose `engine_player` is present but not a nonempty string, or that names no id at all, fails this link on that
+  line, and the game is not verified.
 
 It prints one line per link and exits 0 when all pass, 1 when one fails. `mud-verify -f PROOF -c COMMITMENT -b
-BOXSCORE` checks saved copies of the three answers offline.
+BOXSCORE` checks saved copies of the three answers offline, including copies saved before `engine_player`.
 
 ## What it proves, and what it does not
 

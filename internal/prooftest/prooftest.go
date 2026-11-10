@@ -5,6 +5,7 @@ package prooftest
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -87,14 +88,60 @@ func Box(res engine.Result, pair proof.Pairing) proof.BoxScore {
 		prefix := strings.TrimSuffix(c.Lineup[0].Player.ID, "b1")
 		for id, line := range res.Batters {
 			if strings.HasPrefix(id, prefix) {
-				side.Batting = append(side.Batting, proof.BoxBatter{Player: id, Line: line})
+				side.Batting = append(side.Batting, proof.BoxBatter{EnginePlayer: str(id), Line: line})
 				side.Hits += line.Hits()
 			}
 		}
 		for id, line := range res.Pitchers {
 			if strings.HasPrefix(id, prefix) {
-				side.Pitching = append(side.Pitching, proof.BoxPitcher{Player: id, Line: line})
+				side.Pitching = append(side.Pitching, proof.BoxPitcher{EnginePlayer: str(id), Line: line})
 			}
+		}
+	}
+	return box
+}
+
+// str is an id as the JSON string a box score line carries.
+func str(id string) json.RawMessage {
+	raw, _ := json.Marshal(id)
+	return raw
+}
+
+// Numbered is a box score as a site that numbers its players serves it: each
+// line keeps its engine_player and carries a number in player, 1, 2, and so
+// on in line order. The lines are copies, so the box score passed in stays as
+// it was.
+func Numbered(box proof.BoxScore) proof.BoxScore {
+	n := 0
+	next := func() json.RawMessage {
+		n++
+		return json.RawMessage(fmt.Sprint(n))
+	}
+	for _, side := range []*proof.BoxSide{&box.Away, &box.Home} {
+		side.Batting = slices.Clone(side.Batting)
+		for i := range side.Batting {
+			side.Batting[i].Player = next()
+		}
+		side.Pitching = slices.Clone(side.Pitching)
+		for i := range side.Pitching {
+			side.Pitching[i].Player = next()
+		}
+	}
+	return box
+}
+
+// Legacy is a box score in the shape saved before engine_player: each line's
+// id in a string player and no engine_player. The lines are copies, so the
+// box score passed in stays as it was.
+func Legacy(box proof.BoxScore) proof.BoxScore {
+	for _, side := range []*proof.BoxSide{&box.Away, &box.Home} {
+		side.Batting = slices.Clone(side.Batting)
+		for i := range side.Batting {
+			side.Batting[i].Player, side.Batting[i].EnginePlayer = side.Batting[i].EnginePlayer, nil
+		}
+		side.Pitching = slices.Clone(side.Pitching)
+		for i := range side.Pitching {
+			side.Pitching[i].Player, side.Pitching[i].EnginePlayer = side.Pitching[i].EnginePlayer, nil
 		}
 	}
 	return box

@@ -109,16 +109,25 @@ type BoxSide struct {
 	Pitching []BoxPitcher `json:"pitching"`
 }
 
-// BoxBatter is one batter's line in a box score.
+// BoxBatter is one batter's line in a box score. EnginePlayer, the JSON field
+// engine_player, is the batter's id in the game's inputs, which the replay's
+// lines carry. Player, the JSON field player, matters only in a box score
+// saved before engine_player existed, which carries that id there as a
+// string; a newer box score may carry any other value there, such as a
+// number. Neither field's JSON type is assumed when reading, so an unexpected
+// one fails its line's replay check instead of the whole box score.
 type BoxBatter struct {
-	Player string            `json:"player"`
-	Line   engine.BatterLine `json:"line"`
+	EnginePlayer json.RawMessage   `json:"engine_player,omitempty"`
+	Player       json.RawMessage   `json:"player,omitempty"`
+	Line         engine.BatterLine `json:"line"`
 }
 
-// BoxPitcher is one pitcher's line in a box score.
+// BoxPitcher is one pitcher's line in a box score; EnginePlayer and Player
+// are as a batter's.
 type BoxPitcher struct {
-	Player string             `json:"player"`
-	Line   engine.PitcherLine `json:"line"`
+	EnginePlayer json.RawMessage    `json:"engine_player,omitempty"`
+	Player       json.RawMessage    `json:"player,omitempty"`
+	Line         engine.PitcherLine `json:"line"`
 }
 
 // Version answers this module's version as the running program was built
@@ -195,7 +204,7 @@ func Check(p Proof, c Commitment, box BoxScore, verify Verifier, trust Trust) Re
 	if engineOK {
 		add("engine", true, "model %s", p.Engine)
 	} else {
-		add("engine", false, "the game used engine model %s and this verifier replays model %s; run %s", p.Engine, engine.Version, RunCommand(p.Module))
+		add("engine", false, "the game used engine model %s and this verifier replays model %s; %s", p.Engine, engine.Version, otherVerifier(p.Module))
 	}
 
 	switch {
@@ -305,20 +314,28 @@ func compareBox(res engine.Result, box BoxScore, id int64) string {
 			return problem
 		}
 		hits := 0
-		for _, b := range side.Batting {
-			line, ok := res.Batters[b.Player]
+		for n, b := range side.Batting {
+			id, problem := lineID(b.EnginePlayer, b.Player)
+			if problem != "" {
+				return fmt.Sprintf("the %s side's batter line %d %s", half, n+1, problem)
+			}
+			line, ok := res.Batters[id]
 			if !ok || line != b.Line {
-				return fmt.Sprintf("batter %s's line differs from the replay's", b.Player)
+				return fmt.Sprintf("batter %s's line differs from the replay's", id)
 			}
 			hits += line.Hits()
 		}
 		if hits != side.Hits {
 			return fmt.Sprintf("the %s side's hits are %d in the box score and %d in the replay", half, side.Hits, hits)
 		}
-		for _, pl := range side.Pitching {
-			line, ok := res.Pitchers[pl.Player]
+		for n, pl := range side.Pitching {
+			id, problem := lineID(pl.EnginePlayer, pl.Player)
+			if problem != "" {
+				return fmt.Sprintf("the %s side's pitcher line %d %s", half, n+1, problem)
+			}
+			line, ok := res.Pitchers[id]
 			if !ok || line != pl.Line {
-				return fmt.Sprintf("pitcher %s's line differs from the replay's", pl.Player)
+				return fmt.Sprintf("pitcher %s's line differs from the replay's", id)
 			}
 		}
 		batters += len(side.Batting)
@@ -328,6 +345,39 @@ func compareBox(res engine.Result, box BoxScore, id int64) string {
 		return fmt.Sprintf("the box score lists %d batters and %d pitchers, the replay %d and %d", batters, pitchers, len(res.Batters), len(res.Pitchers))
 	}
 	return ""
+}
+
+// lineID answers the id a box score line names its player by for the replay:
+// engine_player, which must then be a nonempty JSON string, or, only when
+// engine_player is absent, a nonempty string player, the shape box scores had
+// before engine_player. Otherwise it answers why the line cannot be matched;
+// an unusable engine_player never falls back to player.
+func lineID(enginePlayer, player json.RawMessage) (id, problem string) {
+	if enginePlayer = bytes.TrimSpace(enginePlayer); len(enginePlayer) > 0 {
+		if json.Unmarshal(enginePlayer, &id) != nil || id == "" {
+			return "", "has engine_player " + shown(enginePlayer) + ", not a player's id"
+		}
+		return id, ""
+	}
+	if json.Unmarshal(player, &id) != nil || id == "" {
+		return "", "names no engine_player to match the replay"
+	}
+	return id, ""
+}
+
+// shown is a JSON value as a message quotes it: an object or an array by its
+// kind, anything else as written, cut to 40 bytes.
+func shown(raw json.RawMessage) string {
+	switch raw[0] {
+	case '{':
+		return "an object"
+	case '[':
+		return "an array"
+	}
+	if len(raw) > 40 {
+		return string(raw[:40]) + "..."
+	}
+	return string(raw)
 }
 
 // compareInnings answers how a side's served runs by inning differ from the
@@ -347,6 +397,19 @@ func compareInnings(half string, served []*int, replay []int) string {
 		return fmt.Sprintf("the %s side's box score shows %d innings, the replay %d", half, played, len(replay))
 	}
 	return ""
+}
+
+// otherVerifier answers the advice for a proof from another engine model: the
+// command that runs the verifier version the proof names, or, when the proof
+// names this verifier's own version, another module, or no version, a note
+// that it names no other, so the advice never sends a reader back to the
+// verifier that just failed.
+func otherVerifier(module string) string {
+	path, version, ok := strings.Cut(module, "@")
+	if !ok || path != Path || version == "" || version == Version() {
+		return "the proof names no other verifier version to run"
+	}
+	return "run " + RunCommand(module)
 }
 
 // RunCommand is the command that runs the verifier at the module version a
