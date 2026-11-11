@@ -19,6 +19,7 @@ import (
 
 	"github.com/digitorus/pkcs7"
 	"github.com/digitorus/timestamp"
+	"github.com/queone/mud-engine/beacon"
 	"golang.org/x/mod/sumdb/note"
 	"golang.org/x/mod/sumdb/tlog"
 )
@@ -62,14 +63,47 @@ func Statement(baseballLeagueSeed uint64, season uint32, day int, inputsHash str
 	return raw
 }
 
+// GameStatement is what one game's anchor stands for: the baseball league's
+// public seed, the season, the Day, the game's slot, its scheduled start in
+// UTC, and the game's inputs hash, as compact JSON. Naming the start fixes the
+// round the game binds before any later round is published.
+func GameStatement(baseballLeagueSeed uint64, season uint32, day, slot int, start time.Time, inputsHash string) []byte {
+	raw, _ := json.Marshal(struct {
+		BaseballLeagueSeed uint64 `json:"baseball_league_seed"`
+		Season             uint32 `json:"season"`
+		Day                int    `json:"day"`
+		Slot               int    `json:"slot"`
+		Start              string `json:"start"`
+		InputsHash         string `json:"inputs_hash"`
+	}{baseballLeagueSeed, season, day, slot, start.UTC().Format(time.RFC3339Nano), inputsHash})
+	return raw
+}
+
+// GameRound is the round a game binds: the first round published at or after
+// its scheduled start and, when its commitment is anchored, after the
+// anchor's time. A zero anchor time is a commitment without an anchor.
+func GameRound(start, anchorTime time.Time) uint64 {
+	after := start
+	if !anchorTime.IsZero() && !anchorTime.Before(after) {
+		after = anchorTime.Add(time.Nanosecond)
+	}
+	return beacon.RoundAt(after)
+}
+
 // VerifyAnchor checks an anchor against the Day it names: the statement and
 // its digest, timestamps from at least two pinned authorities, and the log
 // entry. It answers the later timestamp's time, before which the commitment
 // existed.
 func VerifyAnchor(a Anchor, baseballLeagueSeed uint64, season uint32, day int, inputsHash string, trust Trust) (time.Time, error) {
-	want := Statement(baseballLeagueSeed, season, day, inputsHash)
+	return VerifyAnchorOf(a, Statement(baseballLeagueSeed, season, day, inputsHash), "this Day's", trust)
+}
+
+// VerifyAnchorOf checks an anchor against the statement it must stand for,
+// named in errors as what, such as "this game's", with the same checks as
+// VerifyAnchor.
+func VerifyAnchorOf(a Anchor, want []byte, what string, trust Trust) (time.Time, error) {
 	if a.Statement != string(want) {
-		return time.Time{}, fmt.Errorf("the anchor's statement is %s, not this Day's %s", a.Statement, want)
+		return time.Time{}, fmt.Errorf("the anchor's statement is %s, not %s %s", a.Statement, what, want)
 	}
 	sum := sha256.Sum256(want)
 	if a.Digest != hex.EncodeToString(sum[:]) {

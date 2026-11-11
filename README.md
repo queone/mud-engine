@@ -15,15 +15,24 @@ go run github.com/queone/mud-engine/cmd/mud-verify@latest https://mudball.one/ga
 The newest verifier replays engine model 2, the model of every game so far. A proof from another model names the
 verifier version that replays it, when it names one other than the verifier running.
 
-It fetches the game's proof, its Day's commitment, and its box score, and checks seven links:
+It fetches the game's proof, the commitment it played under, and its box score, and checks seven links. A game
+committed on its own, just before its scheduled start, has its own commitment at `/api/games/ID/commitment`; a game
+played under its Day's commitment, as every game was before games started at their own times, has its Day's.
+
 
 - engine: the game used this verifier's engine model; a game from another model names the version that replays it.
-- commitment: the game's round and inputs hash are the ones its Day committed to.
+- commitment: the game's round and inputs hash are the ones its commitment bound, and a game's own commitment is for
+  its slot and names its scheduled start.
 - anchor: the commitment existed outside the site before its round: two RFC 3161 timestamp authorities, of
   Sigstore, DigiCert, and FreeTSA, signed its digest, the public Rekor v2 log holds an entry for it under the site's
-  anchor key, and the round was published after the later timestamp. A Day committed without an anchor shows this
-  link as `none`, and the verdict reads `verified, not anchored`.
-- inputs: the Day's inputs hash to that commitment, and the game's inputs are its slot among them.
+  anchor key, and the round was published after the later timestamp. A game's own commitment binds exactly one
+  round: the first published at or after its scheduled start and after the later timestamp, so the site cannot choose
+  among later rounds; the anchor's statement names the start, so it was fixed before that round. A Day's commitment
+  shows only that its round came after the later timestamp. A commitment without an anchor shows this link as `none`,
+  and the verdict reads `verified, not anchored`; a game's own commitment without one still binds the first round at
+  or after its start.
+- inputs: the committed inputs hash to that commitment, and the game's inputs are a game's own commitment's inputs or
+  its slot among its Day's.
 - beacon: the drand quicknet round's signature verifies against the chain's public key, and the randomness is the
   SHA-256 of the signature.
 - seed: the seed derives from the baseball league's public seed, the season, the game number (Day*16+slot), and the
@@ -43,10 +52,11 @@ BOXSCORE` checks saved copies of the three answers offline, including copies sav
   threshold of the League of Entropy's members (https://drand.love).
 - The game's result follows from its committed inputs and that round, with this engine.
 - A changed result, inputs, or round no longer verifies: results are tamper-evident, not tamper-proof.
-- An anchored commitment existed outside the site before its round, so even a Day played late, after an outage
+- An anchored commitment existed outside the site before its round, so even a game played late, after an outage
   or in a new baseball league's catch-up, was unknowable when committed.
-- The log makes a second commitment for the same Day public, but finding one means reading the log for every entry
-  under the site's key; the verifier checks only the entry the site serves.
+- A game's own anchored commitment binds the one round its scheduled start and its anchor allow.
+- The log makes a second commitment or anchor request for the same game or Day public, but finding one means
+  reading the log for every entry under the site's key; the verifier checks only the entry the site serves.
 - Rosters, lineups, and accounts are the site's; the proof covers how a game played from its inputs.
 
 ## Packages

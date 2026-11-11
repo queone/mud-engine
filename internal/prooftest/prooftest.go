@@ -169,6 +169,42 @@ func club(name, prefix string, rating int) engine.Club {
 	return c
 }
 
+// OwnGame is Game played under its own commitment instead of its Day's: the
+// commitment covers slot 2 alone, its inputs that game's pairing, and its
+// scheduled start is its round's publication, so it binds that round.
+func OwnGame() (proof.Proof, proof.Commitment, proof.BoxScore, error) {
+	p, c, box, err := Game()
+	if err != nil {
+		return p, c, box, err
+	}
+	hash, err := proof.HashInputs(p.Inputs)
+	if err != nil {
+		return p, c, box, err
+	}
+	p.CommitmentScope, p.InputsHash = proof.ScopeGame, hash
+	c.Scope, c.Slot, c.Inputs, c.InputsHash, c.Start = proof.ScopeGame, Slot, p.Inputs, hash, beacon.TimeOf(Round)
+	return p, c, box, nil
+}
+
+// AnchoredOwnGame is OwnGame with its commitment anchored a day before its
+// round, and the notary whose Trust checks the anchor.
+func AnchoredOwnGame() (proof.Proof, proof.Commitment, proof.BoxScore, *notary.Notary, error) {
+	p, c, box, err := OwnGame()
+	if err != nil {
+		return p, c, box, nil, err
+	}
+	n, err := notary.New()
+	if err != nil {
+		return p, c, box, nil, err
+	}
+	a, err := n.Anchor(proof.GameStatement(Seed, Season, Day, Slot, c.Start, c.InputsHash), c.CommittedAt)
+	if err != nil {
+		return p, c, box, nil, err
+	}
+	c.Anchor = &a
+	return p, c, box, n, nil
+}
+
 // AnchoredGame is Game with its Day's commitment anchored a day before its
 // round, and the notary whose Trust checks the anchor.
 func AnchoredGame() (proof.Proof, proof.Commitment, proof.BoxScore, *notary.Notary, error) {

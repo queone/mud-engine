@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -267,6 +268,113 @@ func anchored(t *testing.T) (proof.Proof, proof.Commitment, proof.BoxScore, *not
 		t.Fatal(err)
 	}
 	return p, c, box, n
+}
+
+// A game played under its own commitment passes every link, the anchor's
+// included when its commitment is anchored.
+func TestAGameUnderItsOwnCommitmentPassesEveryLink(t *testing.T) {
+	p, c, box, err := prooftest.OwnGame()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := proof.Check(p, c, box, beacon.Verify, proof.DefaultTrust())
+	if !r.OK() || len(r.Links) != 7 || !strings.Contains(link(t, r, "commitment").Detail, "the game's own, slot 2") {
+		t.Fatalf("a game under its own commitment: %+v", r.Links)
+	}
+	if a := link(t, r, "anchor"); !a.None || a.Detail != "the game's commitment has no anchor" {
+		t.Errorf("anchor link %+v", a)
+	}
+	p, c, box, n, err := prooftest.AnchoredOwnGame()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := proof.Check(p, c, box, beacon.Verify, n.Trust); !r.OK() || !r.Anchored() {
+		t.Fatalf("an anchored game under its own commitment: %+v", r.Links)
+	}
+}
+
+// Every way a game's own commitment can be wrong fails its link.
+func TestEachMismatchOfAGamesOwnCommitmentFailsItsLink(t *testing.T) {
+	cases := []struct {
+		name, link, want string
+		alter            func(*proof.Proof, *proof.Commitment)
+	}{
+		{"a commitment for another slot", "commitment", "is for slot 1, not the game's slot 2", func(_ *proof.Proof, c *proof.Commitment) { c.Slot = 1 }},
+		{"another round", "commitment", "not the game's bound round", func(_ *proof.Proof, c *proof.Commitment) { c.Round++ }},
+		{"a proof that names its Day's commitment", "commitment", "names a day commitment, but the site served a game one", func(p *proof.Proof, _ *proof.Commitment) { p.CommitmentScope = "" }},
+		{"inputs that are not the committed ones", "inputs", "hash to", func(_ *proof.Proof, c *proof.Commitment) {
+			c.Inputs = bytes.Replace(c.Inputs, []byte(`"contact":52`), []byte(`"contact":99`), 1)
+		}},
+		{"no scheduled start", "commitment", "names no scheduled start", func(_ *proof.Proof, c *proof.Commitment) { c.Start = time.Time{} }},
+		{"a scheduled start whose first round is another", "commitment", "is not the first round at or after the game's start", func(_ *proof.Proof, c *proof.Commitment) {
+			c.Start = c.Start.Add(-time.Hour)
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p, c, box, err := prooftest.OwnGame()
+			if err != nil {
+				t.Fatal(err)
+			}
+			tc.alter(&p, &c)
+			r := proof.Check(p, c, box, beacon.Verify, proof.DefaultTrust())
+			if l := link(t, r, tc.link); r.OK() || l.OK || !strings.Contains(l.Detail, tc.want) {
+				t.Errorf("%s link %+v, want a failure naming %q", tc.link, l, tc.want)
+			}
+		})
+	}
+	// An anchor for another game of the Day fails the anchor link.
+	p, c, box, n, err := prooftest.AnchoredOwnGame()
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := n.Anchor(proof.GameStatement(prooftest.Seed, prooftest.Season, prooftest.Day, 1, c.Start, c.InputsHash), c.CommittedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Anchor = &other
+	if r := proof.Check(p, c, box, beacon.Verify, n.Trust); r.OK() || link(t, r, "anchor").OK || !strings.Contains(link(t, r, "anchor").Detail, "not this game's") {
+		t.Errorf("an anchor for another game: %+v", link(t, r, "anchor"))
+	}
+	// A commitment that names another start than its anchor's statement fails
+	// the anchor link.
+	p, c, box, n, err = prooftest.AnchoredOwnGame()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Start = c.Start.Add(time.Minute)
+	if r := proof.Check(p, c, box, beacon.Verify, n.Trust); r.OK() || link(t, r, "anchor").OK || !strings.Contains(link(t, r, "anchor").Detail, "not this game's") {
+		t.Errorf("another scheduled start: %+v", link(t, r, "anchor"))
+	}
+}
+
+// An anchored game binds exactly the first round at or after its scheduled
+// start that follows its anchor: a later round fails the anchor link even
+// though it was published after the anchor.
+func TestAGameBindsExactlyTheFirstRoundItsRuleAllows(t *testing.T) {
+	p, c, box, n, err := prooftest.AnchoredOwnGame()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a := link(t, proof.Check(p, c, box, beacon.Verify, n.Trust), "anchor"); !a.OK || !strings.Contains(a.Detail, "is the first at or after the game's start") {
+		t.Fatalf("the rule's own round: %+v", a)
+	}
+	p.Round, c.Round = p.Round+1, c.Round+1
+	a := link(t, proof.Check(p, c, box, beacon.Verify, n.Trust), "anchor")
+	if a.OK || !strings.Contains(a.Detail, fmt.Sprintf("round %d is not the first round at or after the game's start", c.Round)) || !strings.HasSuffix(a.Detail, fmt.Sprintf("round %d", prooftest.Round)) {
+		t.Errorf("a later round: %+v", a)
+	}
+	// Anchored after its start, a game binds the first round after the anchor.
+	start := beacon.TimeOf(prooftest.Round).Add(-time.Hour)
+	if got := proof.GameRound(start, beacon.TimeOf(prooftest.Round)); got != prooftest.Round+1 {
+		t.Errorf("anchored at round %d's moment after the start, the game binds round %d, want %d", prooftest.Round, got, prooftest.Round+1)
+	}
+	if got := proof.GameRound(start, beacon.TimeOf(prooftest.Round).Add(-time.Second)); got != prooftest.Round {
+		t.Errorf("anchored a second before round %d, the game binds round %d", prooftest.Round, got)
+	}
+	if got := proof.GameRound(beacon.TimeOf(prooftest.Round), time.Time{}); got != prooftest.Round {
+		t.Errorf("with no anchor, a game starting at round %d's moment binds round %d", prooftest.Round, got)
+	}
 }
 
 func TestAnAnchoredGamePassesEverySevenLinks(t *testing.T) {

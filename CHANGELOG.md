@@ -3,6 +3,7 @@
 | Version | Summary |
 |---------|---------|
 | Unreleased | |
+| 0.6.0 | The verifier checks a game's own commitment and its exact beacon round |
 | 0.5.0 | Box score lines match by engine_player; saved older box scores still verify |
 | 0.4.1 | build.sh checks Markdown for bare AC, AT, and IE identifiers |
 | 0.4.0 | Proof names the baseball league: fields, commitment route, and anchor statement |

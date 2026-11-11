@@ -1,8 +1,8 @@
 # mud-verify
 
 `mud-verify` replays a game Mud Baseball played and checks every link of its proof: the drand round's signature, the
-seed, the Day's inputs against their commitment, and every line of the box score. The [module README](../../README.md)
-explains each link and what a passing check proves.
+seed, the game's inputs against the commitment it played under, its own or its Day's, and every line of the box
+score. The [module README](../../README.md) explains each link and what a passing check proves.
 
 Run the newest version, with nothing to install:
 
@@ -18,7 +18,7 @@ every game played so far, online or from saved copies.
 ### Usage
 
 ```text
-mud-verify v0.5.0
+mud-verify v0.6.0
 Replay a Mud Baseball game and check every link of its proof
 github.com/queone/mud-engine/cmd/mud-verify
 
@@ -28,11 +28,11 @@ Usage
 
   URL is a game's box score page, https://SITE/games/ID, or its API answer,
   https://SITE/api/games/ID. The second form checks saved copies of the game's
-  /api/games/ID/proof, its Day's commitment, and /api/games/ID.
+  /api/games/ID/proof, the commitment it played under, and /api/games/ID.
 
 Options
   -f, --proof FILE        a saved proof
-  -c, --commitment FILE   the saved commitment of the game's Day
+  -c, --commitment FILE   the saved commitment the game played under
   -b, --box FILE          the saved box score
   -v, --version           print the version
   -h, -?, --help          show this help

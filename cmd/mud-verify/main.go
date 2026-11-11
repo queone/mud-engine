@@ -20,7 +20,7 @@ import (
 
 // programVersion is the verifier's release version; the build checks it, and
 // release prep bumps it.
-const programVersion = "0.5.0"
+const programVersion = "0.6.0"
 
 // usage is the help, in the shape the build's help probe checks, and the text
 // of the Usage block in cmd/mud-verify/README.md.
@@ -35,11 +35,11 @@ Usage
 
   URL is a game's box score page, https://SITE/games/ID, or its API answer,
   https://SITE/api/games/ID. The second form checks saved copies of the game's
-  /api/games/ID/proof, its Day's commitment, and /api/games/ID.
+  /api/games/ID/proof, the commitment it played under, and /api/games/ID.
 
 Options
   -f, --proof FILE        a saved proof
-  -c, --commitment FILE   the saved commitment of the game's Day
+  -c, --commitment FILE   the saved commitment the game played under
   -b, --box FILE          the saved box score
   -v, --version           print the version
   -h, -?, --help          show this help

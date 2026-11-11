@@ -71,22 +71,48 @@ type Proof struct {
 	Engine             string          `json:"engine_version"`
 	// Module is the engine module and version the site ran, as PATH@VERSION.
 	Module string `json:"module"`
+	// CommitmentScope is the scope of the commitment the game played under:
+	// ScopeGame for its own, or ScopeDay, or empty from a site that predates
+	// scopes, for its Day's.
+	CommitmentScope string `json:"commitment_scope,omitempty"`
 }
 
-// Commitment is a Day's commitment as the site serves it at
-// /api/baseball-leagues/{id}/seasons/{n}/days/{d}/commitment: the beacon round bound
-// to the Day, the hash of the Day's inputs, when it was stored, and the
-// inputs themselves, so anyone can recompute the hash.
+// The scopes a commitment can cover: a Day's games, or one game.
+const (
+	ScopeDay  = "day"
+	ScopeGame = "game"
+)
+
+// scopeOf reads a scope, empty from a site that predates scopes being a
+// Day's.
+func scopeOf(scope string) string {
+	if scope == "" {
+		return ScopeDay
+	}
+	return scope
+}
+
+// Commitment is a commitment as the site serves it: a Day's at
+// /api/baseball-leagues/{id}/seasons/{n}/days/{d}/commitment, whose inputs
+// are the Day's games' pairings by slot, or one game's at
+// /api/games/{id}/commitment, whose inputs are that game's pairing. Either
+// names the beacon round it binds, the hash of its inputs, when it was
+// stored, and the inputs themselves, so anyone can recompute the hash.
 type Commitment struct {
-	BaseballLeague BaseballLeague  `json:"baseball_league"`
-	Season         uint32          `json:"season"`
-	Day            int             `json:"day"`
-	Round          uint64          `json:"round"`
-	RoundAt        time.Time       `json:"round_at"`
-	InputsHash     string          `json:"inputs_hash"`
-	CommittedAt    time.Time       `json:"committed_at"`
-	Inputs         json.RawMessage `json:"inputs"`
-	Anchor         *Anchor         `json:"anchor"` // nil for a Day committed without one
+	BaseballLeague BaseballLeague `json:"baseball_league"`
+	Scope          string         `json:"scope,omitempty"` // ScopeDay or ScopeGame; empty is a Day's
+	Season         uint32         `json:"season"`
+	Day            int            `json:"day"`
+	Slot           int            `json:"slot"` // the game's slot, for a game's commitment
+	// Start is a game's scheduled start, the real moment its round follows,
+	// which its anchor statement names; a Day's commitment has none.
+	Start       time.Time       `json:"start,omitzero"`
+	Round       uint64          `json:"round"`
+	RoundAt     time.Time       `json:"round_at"`
+	InputsHash  string          `json:"inputs_hash"`
+	CommittedAt time.Time       `json:"committed_at"`
+	Inputs      json.RawMessage `json:"inputs"`
+	Anchor      *Anchor         `json:"anchor"` // nil for a Day committed without one
 }
 
 // BoxScore is the part of a served box score, /api/games/{id}, that a replay
@@ -207,23 +233,44 @@ func Check(p Proof, c Commitment, box BoxScore, verify Verifier, trust Trust) Re
 		add("engine", false, "the game used engine model %s and this verifier replays model %s; %s", p.Engine, engine.Version, otherVerifier(p.Module))
 	}
 
+	game := scopeOf(c.Scope) == ScopeGame
+	owner, this := "the Day's", "this Day's"
+	statement := Statement(p.BaseballLeagueSeed, c.Season, c.Day, c.InputsHash)
+	if game {
+		owner, this = "the game's", "this game's"
+		statement = GameStatement(p.BaseballLeagueSeed, c.Season, c.Day, c.Slot, c.Start, c.InputsHash)
+	}
 	switch {
 	case c.BaseballLeague.ID != p.BaseballLeague.ID || c.Season != p.Season || c.Day != p.Day:
 		add("commitment", false, "the commitment is for baseball league %d season %d Day %d, not the game's baseball league %d season %d Day %d", c.BaseballLeague.ID, c.Season, c.Day, p.BaseballLeague.ID, p.Season, p.Day)
+	case scopeOf(p.CommitmentScope) != scopeOf(c.Scope):
+		add("commitment", false, "the proof names a %s commitment, but the site served a %s one", scopeOf(p.CommitmentScope), scopeOf(c.Scope))
+	case game && c.Slot != p.Slot:
+		add("commitment", false, "the commitment is for slot %d, not the game's slot %d", c.Slot, p.Slot)
 	case c.Round != p.Round:
-		add("commitment", false, "the game used round %d, not the Day's bound round %d", p.Round, c.Round)
+		add("commitment", false, "the game used round %d, not %s bound round %d", p.Round, owner, c.Round)
 	case c.InputsHash != p.InputsHash:
 		add("commitment", false, "the proof names inputs hash %s, the commitment %s", p.InputsHash, c.InputsHash)
+	case game && c.Start.IsZero():
+		add("commitment", false, "the game's commitment names no scheduled start")
+	case game && c.Anchor == nil && c.Round != GameRound(c.Start, time.Time{}):
+		add("commitment", false, "round %d is not the first round at or after the game's start %s, round %d", c.Round, c.Start.UTC().Format(time.RFC3339), GameRound(c.Start, time.Time{}))
+	case game:
+		add("commitment", true, "season %d Day %d, the game's own, slot %d, round %d, committed %s", c.Season, c.Day, c.Slot, c.Round, c.CommittedAt.UTC().Format(time.RFC3339))
 	default:
 		add("commitment", true, "season %d Day %d, round %d, committed %s", c.Season, c.Day, c.Round, c.CommittedAt.UTC().Format(time.RFC3339))
 	}
 
 	if c.Anchor == nil {
-		r.Links = append(r.Links, Link{Name: "anchor", OK: true, None: true, Detail: "the Day's commitment has no anchor"})
-	} else if at, err := VerifyAnchor(*c.Anchor, p.BaseballLeagueSeed, c.Season, c.Day, c.InputsHash, trust); err != nil {
+		r.Links = append(r.Links, Link{Name: "anchor", OK: true, None: true, Detail: owner + " commitment has no anchor"})
+	} else if at, err := VerifyAnchorOf(*c.Anchor, statement, this, trust); err != nil {
 		add("anchor", false, "%v", err)
 	} else if published := beacon.TimeOf(c.Round); !published.After(at) {
 		add("anchor", false, "round %d was published %s, not after the anchor's time %s", c.Round, published.UTC().Format(time.RFC3339), at.Format(time.RFC3339))
+	} else if want := GameRound(c.Start, at); game && c.Round != want {
+		add("anchor", false, "round %d is not the first round at or after the game's start %s and after the anchor's time %s, round %d", c.Round, c.Start.UTC().Format(time.RFC3339), at.Format(time.RFC3339), want)
+	} else if game {
+		add("anchor", true, "timestamped %s by %d authorities and logged at %s; round %d is the first at or after the game's start %s that came after", at.Format(time.RFC3339), len(c.Anchor.Timestamps), c.Anchor.Log.URL, c.Round, c.Start.UTC().Format(time.RFC3339))
 	} else {
 		add("anchor", true, "timestamped %s by %d authorities and logged at %s; round %d came after", at.Format(time.RFC3339), len(c.Anchor.Timestamps), c.Anchor.Log.URL, c.Round)
 	}
@@ -267,14 +314,33 @@ func Check(p Proof, c Commitment, box BoxScore, verify Verifier, trust Trust) Re
 	return r
 }
 
-// gameInputs checks the Day's inputs against their hash and finds the game's
-// own among them, answering them when both hold.
+// gameInputs checks the committed inputs against their hash and finds the
+// game's own: a game's commitment holds only them, and a Day's holds them at
+// the game's slot. It answers them when the checks hold.
 func gameInputs(p Proof, c Commitment, add func(string, bool, string, ...any)) (Pairing, bool) {
 	var none Pairing
 	sum, err := HashInputs(c.Inputs)
 	if err != nil {
 		add("inputs", false, "%v", err)
 		return none, false
+	}
+	if scopeOf(c.Scope) == ScopeGame {
+		if sum != c.InputsHash {
+			add("inputs", false, "the game's inputs hash to %s, not the committed %s", sum, c.InputsHash)
+			return none, false
+		}
+		var own, mine bytes.Buffer
+		if json.Compact(&own, c.Inputs) != nil || json.Compact(&mine, p.Inputs) != nil || !bytes.Equal(own.Bytes(), mine.Bytes()) {
+			add("inputs", false, "the proof's inputs differ from the game's committed inputs")
+			return none, false
+		}
+		var pair Pairing
+		if err := json.Unmarshal(c.Inputs, &pair); err != nil {
+			add("inputs", false, "the game's inputs: %v", err)
+			return none, false
+		}
+		add("inputs", true, "the game's inputs hash to its commitment")
+		return pair, true
 	}
 	if sum != c.InputsHash {
 		add("inputs", false, "the Day's inputs hash to %s, not the committed %s", sum, c.InputsHash)

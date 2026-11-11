@@ -29,6 +29,7 @@ func site(t *testing.T, p proof.Proof, c proof.Commitment, box proof.BoxScore) *
 	mux := http.NewServeMux()
 	mux.HandleFunc(fmt.Sprintf("GET /api/games/%d/proof", p.GameID), serve(p))
 	mux.HandleFunc(fmt.Sprintf("GET /api/baseball-leagues/%d/seasons/%d/days/%d/commitment", c.BaseballLeague.ID, c.Season, c.Day), serve(c))
+	mux.HandleFunc(fmt.Sprintf("GET /api/games/%d/commitment", p.GameID), serve(c))
 	mux.HandleFunc(fmt.Sprintf("GET /api/games/%d", p.GameID), serve(box))
 	mux.HandleFunc("GET /api/games/404/proof", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
@@ -167,6 +168,23 @@ func TestVerifyFailsAnUnusableEnginePlayerOnItsLine(t *testing.T) {
 		t.Errorf("online: %d %q %q", code, out, errOut)
 	}
 	if offline, _, code := verify(t, nil, save(t, p, c, bad)...); code != 1 || offline != out {
+		t.Errorf("offline: %d %q, online gave %q", code, offline, out)
+	}
+}
+
+// A game played under its own commitment verifies from its address, the
+// commitment fetched from the game's own route, and from saved copies.
+func TestVerifyReadsAGamesOwnCommitmentOnlineAndOffline(t *testing.T) {
+	p, c, box, err := prooftest.OwnGame()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := site(t, p, c, box)
+	out, errOut, code := verify(t, ts.Client(), ts.URL+"/games/7")
+	if code != 0 || errOut != "" || !strings.HasSuffix(out, "\nverified, not anchored\n") || !strings.Contains(out, "the game's own, slot 2") {
+		t.Errorf("online: %d %q %q", code, out, errOut)
+	}
+	if offline, _, code := verify(t, nil, save(t, p, c, box)...); code != 0 || offline != out {
 		t.Errorf("offline: %d %q, online gave %q", code, offline, out)
 	}
 }

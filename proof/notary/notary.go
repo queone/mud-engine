@@ -16,6 +16,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/asn1"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
@@ -24,6 +25,8 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -47,6 +50,8 @@ type Notary struct {
 	records [][]byte
 	hashes  hashList
 	down    map[string]bool
+	held    int64 // the tree size the log publishes while it holds its tiles back, or -1
+	named   int64 // the index the log's duplicate refusals name instead of the true one, or -1
 }
 
 type authority struct {
@@ -70,7 +75,7 @@ func (h hashList) ReadHashes(indexes []int64) ([]tlog.Hash, error) {
 // New makes the authorities, the log, and the key, with a few entries already
 // in the log so a proof has hashes to climb.
 func New() (*Notary, error) {
-	n := &Notary{LogURL: "https://log.test", logName: "log.test", down: map[string]bool{}}
+	n := &Notary{LogURL: "https://log.test", logName: "log.test", down: map[string]bool{}, held: -1, named: -1}
 	var err error
 	if n.Key, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader); err != nil {
 		return nil, err
@@ -219,6 +224,11 @@ func bodyOf(digest, sig []byte, pub string) ([]byte, error) {
 func (n *Notary) Enter(body []byte) (json.RawMessage, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
+	return n.enter(body)
+}
+
+// enter is Enter with the lock held.
+func (n *Notary) enter(body []byte) (json.RawMessage, error) {
 	index := int64(len(n.records))
 	if err := n.append(body); err != nil {
 		return nil, err
@@ -227,16 +237,11 @@ func (n *Notary) Enter(body []byte) (json.RawMessage, error) {
 		return nil, err
 	}
 	size := int64(len(n.records))
-	root, err := tlog.TreeHash(size, n.hashes)
+	root, envelope, err := n.checkpoint(size)
 	if err != nil {
 		return nil, err
 	}
 	p, err := tlog.ProveRecord(size, index, n.hashes)
-	if err != nil {
-		return nil, err
-	}
-	text := fmt.Sprintf("%s\n%d\n%s\n", n.logName, size, base64.StdEncoding.EncodeToString(root[:]))
-	envelope, err := note.Sign(&note.Note{Text: text}, n.signer)
 	if err != nil {
 		return nil, err
 	}
@@ -265,6 +270,48 @@ func (n *Notary) Enter(body []byte) (json.RawMessage, error) {
 	e.InclusionProof.Checkpoint.Envelope = string(envelope)
 	e.CanonicalizedBody = base64.StdEncoding.EncodeToString(body)
 	return json.Marshal(e)
+}
+
+// checkpoint is the log's signed checkpoint of its first size entries.
+func (n *Notary) checkpoint(size int64) (tlog.Hash, []byte, error) {
+	root, err := tlog.TreeHash(size, n.hashes)
+	if err != nil {
+		return tlog.Hash{}, nil, err
+	}
+	text := fmt.Sprintf("%s\n%d\n%s\n", n.logName, size, base64.StdEncoding.EncodeToString(root[:]))
+	envelope, err := note.Sign(&note.Note{Text: text}, n.signer)
+	return root, envelope, err
+}
+
+// published is the tree size the log's checkpoint and tiles show, with the
+// lock held.
+func (n *Notary) published() int64 {
+	if n.held >= 0 {
+		return n.held
+	}
+	return int64(len(n.records))
+}
+
+// HoldTiles holds the log's tiles back, as a log does before it publishes a
+// checkpoint holding its newest entries: while held, its checkpoint stays at
+// the size it had when held, and a tile past that size is not found.
+// Releasing publishes every entry.
+func (n *Notary) HoldTiles(hold bool) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.held = -1
+	if hold {
+		n.held = int64(len(n.records))
+	}
+}
+
+// NameIndex makes the log's duplicate refusals name index instead of the
+// entry the log holds, so a test can check that a client verifies the entry
+// it is pointed at; a negative index restores the true one.
+func (n *Notary) NameIndex(index int64) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.named = index
 }
 
 // Anchor anchors a statement: timestamps from the first two authorities, the
@@ -296,8 +343,8 @@ func (n *Notary) Anchor(statement []byte, at time.Time) (proof.Anchor, error) {
 }
 
 // SetDown takes one service down or brings it back: an authority by its
-// name, "one", "two", or "three", or the log as "log". A service that is down
-// answers 503.
+// name, "one", "two", or "three", the log's entry requests as "log", or its
+// checkpoint and tiles as "tiles". A service that is down answers 503.
 func (n *Notary) SetDown(name string, down bool) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -357,7 +404,12 @@ func (n *Notary) tsaHandler(i int, now func() time.Time) http.Handler {
 	})
 }
 
-// logHandler answers Rekor v2 entry requests at /api/v2/log/entries.
+// logHandler answers Rekor v2 entry requests at /api/v2/log/entries, and,
+// as Rekor v2 does, refuses a request whose entry the log already holds with
+// 409 and the entry's index in x-log-index. It serves its signed checkpoint
+// at /api/v2/checkpoint and its tiles under /api/v2/tile/ in the C2SP
+// tlog-tiles layout: hash tiles at tile/{L}/{N} and entry bundles, each entry
+// after its two-byte big-endian length, at tile/entries/{N}.
 func (n *Notary) logHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v2/log/entries", func(w http.ResponseWriter, r *http.Request) {
@@ -396,7 +448,22 @@ func (n *Notary) logHandler() http.Handler {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		entry, err := n.Enter(body)
+		n.mu.Lock()
+		held := slices.IndexFunc(n.records, func(r []byte) bool { return bytes.Equal(r, body) })
+		var entry json.RawMessage
+		if held < 0 {
+			entry, err = n.enter(body)
+		} else if n.named >= 0 {
+			held = int(n.named)
+		}
+		n.mu.Unlock()
+		if held >= 0 {
+			w.Header().Set("x-log-index", fmt.Sprint(held))
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			_, _ = fmt.Fprintf(w, `{"code":6,"message":"an equivalent entry already exists in the transparency log with index %d","details":[]}`, held)
+			return
+		}
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -405,5 +472,62 @@ func (n *Notary) logHandler() http.Handler {
 		w.WriteHeader(http.StatusCreated)
 		_, _ = w.Write(bytes.TrimSpace(entry))
 	})
+	mux.HandleFunc("GET /api/v2/checkpoint", func(w http.ResponseWriter, r *http.Request) {
+		if n.isDown("tiles") {
+			http.Error(w, "down", http.StatusServiceUnavailable)
+			return
+		}
+		n.mu.Lock()
+		_, envelope, err := n.checkpoint(n.published())
+		n.mu.Unlock()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = w.Write(envelope)
+	})
+	mux.HandleFunc("GET /api/v2/tile/{path...}", func(w http.ResponseWriter, r *http.Request) {
+		if n.isDown("tiles") {
+			http.Error(w, "down", http.StatusServiceUnavailable)
+			return
+		}
+		data, err := n.tile(r.PathValue("path"))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/octet-stream")
+		_, _ = w.Write(data)
+	})
 	return mux
+}
+
+// tile answers one published tile by its C2SP path under tile/: a hash tile,
+// {L}/{N}, or an entry bundle, entries/{N}, either full or partial with .p/{W}.
+func (n *Notary) tile(path string) ([]byte, error) {
+	sumdb := "tile/8/" + path
+	if rest, ok := strings.CutPrefix(path, "entries/"); ok {
+		sumdb = "tile/8/data/" + rest
+	}
+	t, err := tlog.ParseTilePath(sumdb)
+	if err != nil {
+		return nil, err
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	// A tile's last hash covers records up to (N*256+W) << 8L.
+	level := max(t.L, 0)
+	if (t.N*256+int64(t.W))<<(8*level) > n.published() {
+		return nil, fmt.Errorf("tile %s is not published", path)
+	}
+	if t.L >= 0 {
+		return tlog.ReadTileData(t, n.hashes)
+	}
+	var bundle []byte
+	for i := t.N * 256; i < t.N*256+int64(t.W); i++ {
+		bundle = binary.BigEndian.AppendUint16(bundle, uint16(len(n.records[i])))
+		bundle = append(bundle, n.records[i]...)
+	}
+	return bundle, nil
 }
