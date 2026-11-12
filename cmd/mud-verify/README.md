@@ -18,7 +18,7 @@ site has served, so it checks every game played so far, online or from saved cop
 ### Usage
 
 ```text
-mud-verify v0.7.0
+mud-verify v0.7.1
 Replay a Mud Baseball game and check every link of its proof
 github.com/queone/mud-engine/cmd/mud-verify
 

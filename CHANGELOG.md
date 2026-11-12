@@ -3,6 +3,7 @@
 | Version | Summary |
 |---------|---------|
 | Unreleased | |
+| 0.7.1 | build.sh keeps one blank line between plan items when prep removes one |
 | 0.7.0 | Model 3 plays each pitch on its own round; the verifier replays models 2 and 3 |
 | 0.6.0 | The verifier checks a game's own commitment and its exact beacon round |
 | 0.5.0 | Box score lines match by engine_player; saved older box scores still verify |

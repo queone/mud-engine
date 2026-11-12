@@ -2079,6 +2079,9 @@ _prep_find_ie_lines() { # $1=root $2=acnums -> matching plan.md lines
   done <"$root/plan.md"
 }
 
+# Drops each listed plan.md line. When a blank line (or nothing) precedes the
+# dropped line, the blank line after it goes too, so a list with one blank
+# line between items keeps exactly one.
 _prep_remove_ie_lines() { # $1=root $2=ielines(newline-sep)
   local root="$1" lines="$2"
   [ -n "$lines" ] || return 0
@@ -2086,8 +2089,11 @@ _prep_remove_ie_lines() { # $1=root $2=ielines(newline-sep)
   tmp=$(mktemp "$(_tmp_root)/prep-plan.XXXXXX")
   _prep_ie_err=''
   drop="$lines" awk '
-    BEGIN { n = split(ENVIRON["drop"], arr, "\n"); for (i = 1; i <= n; i++) if (arr[i] != "") d[arr[i]] = 1 }
-    { if ($0 in d) next; print }
+    BEGIN { n = split(ENVIRON["drop"], arr, "\n"); for (i = 1; i <= n; i++) if (arr[i] != "") d[arr[i]] = 1; blank = 1 }
+    { if (skip && $0 == "") { skip = 0; next }
+      skip = 0
+      if ($0 in d) { skip = blank; next }
+      print; blank = ($0 == "") }
   ' "$root/plan.md" >"$tmp" || { rm -f "$tmp"; _prep_ie_err="awk failed on plan.md"; return 1; }
   if ! cat "$tmp" 2>/dev/null >"$root/plan.md"; then
     rm -f "$tmp"; _prep_ie_err="write failed: $root/plan.md"; return 1
