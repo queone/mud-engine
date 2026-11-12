@@ -83,8 +83,11 @@ func TestEachAlteredLinkFailsOnItsOwn(t *testing.T) {
 		}},
 		{"a round other than the Day's", "commitment", "bound round", func(p *proof.Proof, _ *proof.Commitment, _ *proof.BoxScore) { p.Round++ }},
 		{"another game number", "seed", "Day*16+slot", func(p *proof.Proof, _ *proof.Commitment, _ *proof.BoxScore) { p.Game++ }},
-		{"another engine model", "engine", "go run github.com/queone/mud-engine/cmd/mud-verify@v0.1.0 URL", func(p *proof.Proof, _ *proof.Commitment, _ *proof.BoxScore) {
+		{"another engine model", "engine", "binds engine model 2, the proof names 1", func(p *proof.Proof, _ *proof.Commitment, _ *proof.BoxScore) {
 			p.Engine = "1"
+		}},
+		{"another draw mode", "engine", "binds game draws, the proof names pitch", func(p *proof.Proof, _ *proof.Commitment, _ *proof.BoxScore) {
+			p.Draws = "pitch"
 		}},
 	}
 	for _, tc := range cases {
@@ -156,8 +159,11 @@ func TestTheEngineAdviceNeverNamesTheRunningVerifier(t *testing.T) {
 		proof.Path:                         false,
 		"":                                 false,
 	} {
-		p, c, box := game(t)
-		p.Engine, p.Module = "1", module
+		p, c, box := model3(t)
+		if err := prooftest.WithModel(&p, &c, "1"); err != nil {
+			t.Fatal(err)
+		}
+		p.Module = module
 		l := link(t, proof.Check(p, c, box, beacon.Verify, proof.DefaultTrust()), "engine")
 		named := strings.Contains(l.Detail, "go run ")
 		if l.OK || named != command || (!command && !strings.HasSuffix(l.Detail, "the proof names no other verifier version to run")) {
@@ -489,4 +495,128 @@ func editEntry(t *testing.T, raw json.RawMessage, edit func(map[string]any)) jso
 		t.Fatal(err)
 	}
 	return out
+}
+
+func model3(t *testing.T) (proof.Proof, proof.Commitment, proof.BoxScore) {
+	t.Helper()
+	p, c, box, err := prooftest.Model3Game()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p, c, box
+}
+
+func live(t *testing.T) (proof.Proof, proof.Commitment, proof.BoxScore) {
+	t.Helper()
+	p, c, box, err := prooftest.LiveGame()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p, c, box
+}
+
+// A model 3 game verifies in both draw modes through the model its
+// commitment names, a per-pitch game's rounds checked as an eighth link, and
+// a model 2 game still verifies through the frozen model.
+func TestEachModelAndDrawModeReplaysAsCommitted(t *testing.T) {
+	p, c, box := game(t)
+	if r := proof.Check(p, c, box, beacon.Verify, proof.DefaultTrust()); !r.OK() || link(t, r, "engine").Detail != "model 2, game draws" {
+		t.Fatalf("a model 2 game: %+v", r.Links)
+	}
+	p, c, box = model3(t)
+	r := proof.Check(p, c, box, beacon.Verify, proof.DefaultTrust())
+	if !r.OK() || len(r.Links) != 7 || link(t, r, "engine").Detail != "model 3, game draws" {
+		t.Fatalf("a model 3 game: %+v", r.Links)
+	}
+	p, c, box = live(t)
+	r = proof.Check(p, c, box, prooftest.FakeVerify, proof.DefaultTrust())
+	if !r.OK() || len(r.Links) != 8 || link(t, r, "engine").Detail != "model 3, pitch draws" {
+		t.Fatalf("a live game: %+v", r.Links)
+	}
+	if l := link(t, r, "rounds"); !strings.HasSuffix(l.Detail, "rounds, every signature verified") || len(p.Rounds) < 200 {
+		t.Errorf("rounds link %+v over %d rounds", l, len(p.Rounds))
+	}
+	if l := link(t, r, "replay"); !strings.Contains(l.Detail, fmt.Sprintf("on %d pitches", len(p.Rounds))) {
+		t.Errorf("replay link %+v", l)
+	}
+	var names []string
+	for _, l := range r.Links {
+		names = append(names, l.Name)
+	}
+	if got := strings.Join(names, " "); got != "engine commitment anchor inputs beacon rounds seed replay" {
+		t.Errorf("links %q", got)
+	}
+}
+
+// A proof must name the model and draw mode its commitment bound, a
+// commitment naming none binding model 2 and whole-game draws; a committed
+// model this verifier does not replay names the verifier that does.
+func TestAProofMustMatchItsCommittedModelAndDraws(t *testing.T) {
+	cases := []struct {
+		name, want string
+		game       func(*testing.T) (proof.Proof, proof.Commitment, proof.BoxScore)
+		alter      func(*proof.Proof, *proof.Commitment)
+	}{
+		{"model 2 claimed on a model 3 commitment", "binds engine model 3, the proof names 2", model3, func(p *proof.Proof, _ *proof.Commitment) { p.Engine = "2" }},
+		{"pitch draws claimed on a game commitment", "binds game draws, the proof names pitch", model3, func(p *proof.Proof, _ *proof.Commitment) { p.Draws = "pitch" }},
+		{"game draws claimed on a pitch commitment", "binds pitch draws, the proof names game", live, func(p *proof.Proof, _ *proof.Commitment) { p.Draws = "" }},
+		{"model 3 claimed on an older commitment", "binds engine model 2, the proof names 3", game, func(p *proof.Proof, _ *proof.Commitment) { p.Engine = "3" }},
+		{"a model this verifier does not replay", "replays models 2 and 3; run go run github.com/queone/mud-engine/cmd/mud-verify@v0.1.0 URL", model3, func(p *proof.Proof, c *proof.Commitment) {
+			if err := prooftest.WithModel(p, c, "4"); err != nil {
+				t.Fatal(err)
+			}
+			p.Module = proof.Path + "@v0.1.0"
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p, c, box := tc.game(t)
+			tc.alter(&p, &c)
+			r := proof.Check(p, c, box, prooftest.FakeVerify, proof.DefaultTrust())
+			l := link(t, r, "engine")
+			if r.OK() || l.OK || !strings.Contains(l.Detail, tc.want) {
+				t.Errorf("engine link %+v, want a failure naming %q", l, tc.want)
+			}
+			if link(t, r, "replay").OK {
+				t.Error("the game replayed though the engine link failed")
+			}
+		})
+	}
+}
+
+// A live game's rounds are checked by signature, by sequence from the bound
+// round under the gap rule, and by count, and a changed line still fails the
+// replay.
+func TestALiveGamesRoundsAreCheckedBySignatureSequenceAndCount(t *testing.T) {
+	cases := []struct {
+		name, link, want string
+		alter            func(*proof.Proof, *proof.BoxScore)
+	}{
+		{"a forged signature", "rounds", "pitch 8's round", func(p *proof.Proof, _ *proof.BoxScore) { p.Rounds[7].Signature = "00" + p.Rounds[7].Signature[2:] }},
+		{"a moved round", "replay", "pitch 6 lists round", func(p *proof.Proof, _ *proof.BoxScore) {
+			p.Rounds[5].Round++
+			p.Rounds[5].Signature = prooftest.FakeSignature(p.Rounds[5].Round)
+		}},
+		{"a missing round", "replay", "names none for pitch", func(p *proof.Proof, _ *proof.BoxScore) { p.Rounds = p.Rounds[:len(p.Rounds)-1] }},
+		{"an extra round", "replay", "the game threw", func(p *proof.Proof, _ *proof.BoxScore) {
+			last := p.Rounds[len(p.Rounds)-1].Round + 5
+			p.Rounds = append(p.Rounds, proof.PitchRound{Round: last, Signature: prooftest.FakeSignature(last)})
+		}},
+		{"no rounds", "rounds", "lists no rounds", func(p *proof.Proof, _ *proof.BoxScore) { p.Rounds = nil }},
+		{"another first round", "rounds", "not the bound round", func(p *proof.Proof, _ *proof.BoxScore) {
+			p.Rounds[0] = proof.PitchRound{Round: p.Round + 1, Signature: prooftest.FakeSignature(p.Round + 1)}
+		}},
+		{"a changed line", "replay", "line differs", func(_ *proof.Proof, b *proof.BoxScore) { b.Away.Batting[0].Line.K++ }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p, c, box := live(t)
+			tc.alter(&p, &box)
+			r := proof.Check(p, c, box, prooftest.FakeVerify, proof.DefaultTrust())
+			l := link(t, r, tc.link)
+			if r.OK() || l.OK || !strings.Contains(l.Detail, tc.want) {
+				t.Errorf("%s link %+v, want a failure naming %q", tc.link, l, tc.want)
+			}
+		})
+	}
 }

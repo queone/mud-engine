@@ -141,6 +141,10 @@ func (c Club) relievers() []Player {
 }
 
 // players lists every player on the club.
+// Players lists every player of the club: the lineup, the starter, and the
+// bullpen.
+func (c Club) Players() []Player { return c.players() }
+
 func (c Club) players() []Player {
 	out := make([]Player, 0, 10+len(c.Bullpen.Others))
 	for _, s := range c.Lineup {

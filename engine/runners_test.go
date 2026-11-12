@@ -5,7 +5,7 @@ import "testing"
 // bench builds a game in the top of the first with the given runners and outs.
 func bench(seed uint64, bases [3]bool, outs int) (*game, *team, *team) {
 	away, home := averageClub("Away", "a"), averageClub("Home", "h")
-	g := newGame(&away, &home, RawSeed(seed, 1))
+	g := newGame(&away, &home, RawSeed(seed, 1), DrawsGame, 0)
 	g.inning, g.top, g.outs = 1, true, outs
 	fld := g.clubs[1]
 	for i, on := range bases {
@@ -35,12 +35,12 @@ func TestWalkForcesOnlyTheRunnersAhead(t *testing.T) {
 
 func TestHitsScoreTheRunnersTheyMust(t *testing.T) {
 	g, _, _ := bench(2, [3]bool{false, false, true}, 0)
-	g.single(newBatter())
+	g.single(g.rng, newBatter())
 	if g.curRuns != 1 || g.bases[0].id != "bat" {
 		t.Errorf("single with third: runs %d", g.curRuns)
 	}
 	g, _, _ = bench(2, [3]bool{false, true, true}, 0)
-	g.double(newBatter())
+	g.double(g.rng, newBatter())
 	if g.curRuns != 2 || g.bases[1].id != "bat" || g.bases[2] != nil {
 		t.Errorf("double with second and third: runs %d, bases %v", g.curRuns, g.snapshot().bases)
 	}
@@ -60,7 +60,7 @@ func TestExtraBasesAndOutsVaryBySeed(t *testing.T) {
 	scored, held := 0, 0
 	for seed := range uint64(200) {
 		g, _, _ := bench(seed, [3]bool{false, true, false}, 0)
-		g.single(newBatter())
+		g.single(g.rng, newBatter())
 		if g.curRuns == 1 {
 			scored++
 		} else if g.bases[2] != nil && g.bases[2].id == "r2" {
@@ -75,7 +75,7 @@ func TestExtraBasesAndOutsVaryBySeed(t *testing.T) {
 	dp, go1 := 0, 0
 	for seed := range uint64(200) {
 		g, _, fld := bench(seed, [3]bool{true, false, false}, 0)
-		switch g.groundOut(fld) {
+		switch g.groundOut(g.rng, fld) {
 		case OutcomeDP:
 			dp++
 			if g.outs != 2 || g.bases[0] != nil {
@@ -94,7 +94,7 @@ func TestExtraBasesAndOutsVaryBySeed(t *testing.T) {
 	sf, ao := 0, 0
 	for seed := range uint64(200) {
 		g, _, fld := bench(seed, [3]bool{false, false, true}, 1)
-		switch g.airOut(fld) {
+		switch g.airOut(g.rng, fld) {
 		case OutcomeSF:
 			sf++
 			if g.curRuns != 1 || g.outs != 2 {
@@ -108,11 +108,11 @@ func TestExtraBasesAndOutsVaryBySeed(t *testing.T) {
 		t.Errorf("air outs: sf %d, plain %d; want both", sf, ao)
 	}
 	g, _, fld := bench(3, [3]bool{false, false, true}, 2)
-	if got := g.airOut(fld); got != OutcomeAO || g.curRuns != 0 || g.outs != 3 {
+	if got := g.airOut(g.rng, fld); got != OutcomeAO || g.curRuns != 0 || g.outs != 3 {
 		t.Errorf("air out with two outs: %s, runs %d, outs %d", got, g.curRuns, g.outs)
 	}
 	g, _, fld = bench(3, [3]bool{true, false, false}, 2)
-	if got := g.groundOut(fld); got != OutcomeGO || g.outs != 3 {
+	if got := g.groundOut(g.rng, fld); got != OutcomeGO || g.outs != 3 {
 		t.Errorf("ground out with two outs: %s, outs %d", got, g.outs)
 	}
 }
@@ -122,22 +122,30 @@ func TestStealAttemptsSucceedAndFail(t *testing.T) {
 	for seed := range uint64(400) {
 		g, bat, fld := bench(seed, [3]bool{true, false, false}, 0)
 		g.bases[0].speed = 90
-		if !g.steal(bat, fld, bat.club.Lineup[0].Player) {
+		g.pa.pitches = []Pitch{{Call: CallBall}}
+		g.steal(g.rng)
+		if len(g.plays) == 0 {
 			none++
 			continue
 		}
 		p := g.plays[len(g.plays)-1]
+		if p.OnPitch != 1 || p.Pitches != nil {
+			t.Fatalf("seed %d: the steal rode pitch %d with pitches %v", seed, p.OnPitch, p.Pitches)
+		}
 		switch p.Outcome {
 		case OutcomeSB:
 			sb++
-			if g.bases[1] == nil || g.bases[0] != nil || bat.batter("r1").SB != 1 {
-				t.Fatalf("seed %d: stolen base left bases %v", seed, g.snapshot().bases)
+			if g.bases[1] == nil || g.bases[0] != nil || bat.batter("r1").SB != 1 || g.pa.before.bases[1] != "r1" {
+				t.Fatalf("seed %d: stolen base left bases %v, plate appearance from %v", seed, g.snapshot().bases, g.pa.before.bases)
 			}
 		case OutcomeCS:
 			cs++
-			if g.outs != 1 || g.bases[0] != nil || bat.batter("r1").CS != 1 || fld.pitcher("hsp").Outs != 1 {
+			if g.outs != 1 || g.bases[0] != nil || bat.batter("r1").CS != 1 || fld.pitcher("hsp").Outs != 1 || g.pa.before.outs != 1 {
 				t.Fatalf("seed %d: caught stealing left outs %d", seed, g.outs)
 			}
+		}
+		if g.curRBI == nil {
+			t.Fatalf("seed %d: the steal play dropped the plate appearance's accumulators", seed)
 		}
 	}
 	if sb == 0 || cs == 0 || none == 0 {

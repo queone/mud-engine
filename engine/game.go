@@ -1,6 +1,7 @@
 // Package engine simulates one baseball game from two clubs' ratings and a
-// seed. The same inputs always produce the same play-by-play log and stat
-// lines, so any game replays exactly.
+// seed, pitch by pitch. The same inputs always produce the same play-by-play
+// log and stat lines, so any game replays exactly, whole or a pitch at a
+// time.
 package engine
 
 import (
@@ -13,6 +14,7 @@ type Result struct {
 	Version    string                 `json:"version"`
 	Seed       Seed                   `json:"seed"`
 	Derivation string                 `json:"derivation"`
+	Draws      Draws                  `json:"draws,omitempty"`
 	Away       Totals                 `json:"away"`
 	Home       Totals                 `json:"home"`
 	Innings    int                    `json:"innings"`
@@ -27,17 +29,17 @@ type Result struct {
 type team struct {
 	club        *Club
 	idx         int // 0 away, 1 home
-	next        int // next lineup slot to bat
+	next        int // lineup index due up
 	batters     map[string]*BatterLine
 	pitchers    map[string]*PitcherLine
-	cur         stint
 	used        map[string]bool
 	order       []string // pitchers in order of appearance
+	cur         stint
 	nextOther   int
-	leadPitcher string // pitcher of record when this team last took the lead
-	losePitcher string // pitcher charged with the last go-ahead run against this team
-	defense     float64
-	catcher     int
+	defense     float64 // mean Defense of the eight fielders
+	catcher     int     // the catcher's Defense
+	leadPitcher string  // pitcher of record when the club last took the lead
+	losePitcher string  // pitcher charged with the run that gave the lead away
 }
 
 func (t *team) batter(id string) *BatterLine {
@@ -58,11 +60,13 @@ func (t *team) pitcher(id string) *PitcherLine {
 	return l
 }
 
-// game is the state of one simulation.
+// game is the state of one simulation between pitches.
 type game struct {
 	clubs     [2]*team
 	seed      Seed
-	rng       *rand.Rand
+	draws     Draws
+	pcg       *rand.PCG  // the whole game's stream in DrawsGame, saved between pitches
+	rng       *rand.Rand // draws from pcg in DrawsGame
 	inning    int
 	top       bool
 	bases     [3]*runner
@@ -71,6 +75,14 @@ type game struct {
 	lineScore [2][]int
 	plays     []Play
 	over      bool
+	decided   bool
+
+	balls, strikes int
+	halfStart      int       // the batting side's runs when the half began
+	pa             *plateCtx // the plate appearance in progress, nil once the game is over
+	pitches        int       // pitches thrown
+	round          uint64    // DrawsPitch: the round the next pitch needs
+	chains         map[[2]string]chain
 
 	// accumulators for the play being resolved
 	curRuns    int
@@ -78,11 +90,62 @@ type game struct {
 	curRBI     *BatterLine
 }
 
-// Simulate plays one game. The away club bats first.
+// plateCtx is the plate appearance in progress.
+type plateCtx struct {
+	bat, fld *team
+	p        Player
+	sp       *Player
+	pp       plateProbs
+	ch       chain
+	bl       *BatterLine
+	pl       *PitcherLine
+	br       *runner
+	before   snapshot
+	pitches  []Pitch
+}
+
+// Simulate plays one game whole, its draws from one stream of the seed. The
+// away club bats first.
 func Simulate(home, away Club, seed Seed) (Result, error) {
+	gm, err := Start(home, away, seed, DrawsGame, 0)
+	if err != nil {
+		return Result{}, err
+	}
+	for !gm.Done() {
+		if _, err := gm.Pitch(nil); err != nil {
+			return Result{}, err
+		}
+	}
+	return gm.Result(), nil
+}
+
+// SimulateLive plays one game whole in per-pitch draws, each pitch's
+// randomness fetched by round from rounds, the first pitch on first: a
+// replay of a game played live.
+func SimulateLive(home, away Club, seed Seed, first uint64, rounds func(round uint64) ([]byte, error)) (Result, error) {
+	gm, err := Start(home, away, seed, DrawsPitch, first)
+	if err != nil {
+		return Result{}, err
+	}
+	for !gm.Done() {
+		round, _ := gm.Next()
+		randomness, err := rounds(round)
+		if err != nil {
+			return Result{}, err
+		}
+		if _, err := gm.Pitch(randomness); err != nil {
+			return Result{}, err
+		}
+	}
+	return gm.Result(), nil
+}
+
+// checkClubs rejects a club that cannot take the field or a player who
+// appears in both.
+func checkClubs(home, away Club) error {
 	for _, c := range []Club{home, away} {
 		if err := c.Validate(); err != nil {
-			return Result{}, err
+			return err
 		}
 	}
 	seen := map[string]bool{}
@@ -91,39 +154,50 @@ func Simulate(home, away Club, seed Seed) (Result, error) {
 	}
 	for _, p := range away.players() {
 		if seen[p.ID] {
-			return Result{}, fmt.Errorf("engine: player id %q appears in both clubs", p.ID)
+			return fmt.Errorf("engine: player id %q appears in both clubs", p.ID)
 		}
 	}
-	g := newGame(&away, &home, seed)
-	g.play()
-	g.decide()
-	return g.result(), nil
+	return nil
 }
 
-func newGame(away, home *Club, seed Seed) *game {
-	g := &game{seed: seed, rng: seed.stream()}
+func newTeam(c *Club, idx int) *team {
+	t := &team{
+		club:     c,
+		idx:      idx,
+		batters:  map[string]*BatterLine{},
+		pitchers: map[string]*PitcherLine{},
+		used:     map[string]bool{c.Starter.ID: true},
+		order:    []string{c.Starter.ID},
+		cur:      stint{pitcher: &c.Starter},
+	}
+	t.leadPitcher = c.Starter.ID
+	t.setDefense()
+	return t
+}
+
+// setDefense reads the fielders' mean Defense and the catcher's from the club.
+func (t *team) setDefense() {
+	sum := 0.0
+	for _, s := range t.club.Lineup {
+		if s.Position == "DH" {
+			continue
+		}
+		sum += float64(s.Player.Batting.Defense)
+		if s.Position == "C" {
+			t.catcher = s.Player.Batting.Defense
+		}
+	}
+	t.defense = sum / 8
+}
+
+func newGame(away, home *Club, seed Seed, draws Draws, first uint64) *game {
+	g := &game{seed: seed, draws: draws, inning: 1, top: true, round: first, chains: map[[2]string]chain{}}
+	if draws == DrawsGame {
+		g.pcg = rand.NewPCG(seed.A, seed.B)
+		g.rng = rand.New(g.pcg)
+	}
 	for i, c := range []*Club{away, home} {
-		t := &team{
-			club:     c,
-			idx:      i,
-			batters:  map[string]*BatterLine{},
-			pitchers: map[string]*PitcherLine{},
-			used:     map[string]bool{c.Starter.ID: true},
-			order:    []string{c.Starter.ID},
-			cur:      stint{pitcher: &c.Starter},
-		}
-		t.leadPitcher = c.Starter.ID
-		sum := 0.0
-		for _, s := range c.Lineup {
-			if s.Position == "DH" {
-				continue
-			}
-			sum += float64(s.Player.Batting.Defense)
-			if s.Position == "C" {
-				t.catcher = s.Player.Batting.Defense
-			}
-		}
-		t.defense = sum / 8
+		t := newTeam(c, i)
 		for _, p := range c.players() {
 			if p.Batting != nil {
 				t.batter(p.ID)
@@ -132,100 +206,203 @@ func newGame(away, home *Club, seed Seed) *game {
 		t.pitcher(c.Starter.ID)
 		g.clubs[i] = t
 	}
+	g.beginHalf()
+	g.beginPlate()
 	return g
 }
 
-// play runs innings until one side leads after a completed inning from the
-// ninth on, or a walk-off ends the game.
-func (g *game) play() {
-	for g.inning = 1; !g.over; g.inning++ {
-		g.top = true
-		g.half(g.clubs[0], g.clubs[1])
-		if g.over {
-			return
-		}
-		if g.inning >= 9 && g.score[1] > g.score[0] {
-			g.over = true
-			return
-		}
-		g.top = false
-		g.half(g.clubs[1], g.clubs[0])
-		if g.over {
-			return
-		}
-		if g.inning >= 9 && g.score[0] != g.score[1] {
-			g.over = true
-			return
-		}
-	}
-}
-
-// half plays one half-inning with bat at the plate and fld in the field.
-func (g *game) half(bat, fld *team) {
+// beginHalf starts a half-inning: the bases clear, the outs reset, the
+// fielding side changes its pitcher when the rules say, and the score is
+// noted for the line score.
+func (g *game) beginHalf() {
+	bat, fld := g.batting(), g.fielding()
 	g.bases = [3]*runner{}
 	g.outs = 0
-	start := g.score[bat.idx]
+	g.halfStart = g.score[bat.idx]
 	g.startHalf(fld)
-	for g.outs < 3 && !g.over {
-		g.midHalf(fld)
-		slot := bat.club.Lineup[bat.next]
-		if g.bases[0] != nil && g.bases[1] == nil && g.steal(bat, fld, slot.Player) && g.outs >= 3 {
-			break
-		}
-		g.plate(bat, fld, slot.Player)
-		bat.next = (bat.next + 1) % 9
-	}
-	g.lineScore[bat.idx] = append(g.lineScore[bat.idx], g.score[bat.idx]-start)
 }
 
-// plate resolves one plate appearance.
-func (g *game) plate(bat, fld *team, p Player) {
+// beginPlate starts the next batter's plate appearance, after the starter's
+// mid-inning hook when he has reached his limit; it reports a pitcher change.
+func (g *game) beginPlate() bool {
+	bat, fld := g.batting(), g.fielding()
+	was := fld.cur.pitcher.ID
+	g.midHalf(fld)
+	p := bat.club.Lineup[bat.next].Player
 	sp := fld.cur.pitcher
 	pp := matchup(p.Batting, p.Bats, sp.Pitching, sp.Throws, fld.defense)
 	bl := bat.batter(p.ID)
-	pl := fld.pitcher(sp.ID)
 	bl.PA++
 	fld.cur.batters++
-	before := g.snapshot()
+	g.balls, g.strikes = 0, 0
+	g.pa = &plateCtx{bat: bat, fld: fld, p: p, sp: sp, pp: pp, ch: g.chainFor(p.ID, sp.ID, pp), bl: bl, pl: fld.pitcher(sp.ID),
+		br: &runner{id: p.ID, pitcher: sp.ID, speed: p.Batting.Speed}, before: g.snapshot()}
 	g.beginPlay(bl)
-	br := &runner{id: p.ID, pitcher: sp.ID, speed: p.Batting.Speed}
-	var outcome string
-	r := g.rng.Float64()
-	switch {
-	case r < pp.k:
-		outcome = OutcomeK
-		bl.AB++
-		bl.K++
-		pl.K++
-		g.recordOuts(fld, 1)
-	case r < pp.k+pp.bb:
-		outcome = OutcomeBB
-		bl.BB++
-		pl.BB++
-		g.force(br)
-	case r < pp.k+pp.bb+pp.hbp:
-		outcome = OutcomeHBP
-		bl.HBP++
-		pl.HBP++
-		g.force(br)
-	default:
-		bl.AB++
-		outcome = g.inPlay(fld, pp, bl, pl, br)
+	return fld.cur.pitcher.ID != was
+}
+
+// chainFor is the solved chain for a batter against a pitcher, kept for the game.
+func (g *game) chainFor(batter, pitcher string, pp plateProbs) chain {
+	key := [2]string{batter, pitcher}
+	if c, ok := g.chains[key]; ok {
+		return c
 	}
-	g.endPlay(before, p.ID, sp.ID, outcome)
+	c := solveChain(pp.k, pp.bb)
+	g.chains[key] = c
+	return c
+}
+
+// pitch throws the next pitch with draws from src and resolves what it
+// brings: the count, the plate appearance's end, a steal attempt on a pitch
+// that is not the last, the half-inning's end, the game's end, and the next
+// plate appearance. It answers the pitch and the gap to the next one's round.
+func (g *game) pitch(src *rand.Rand) (Pitch, uint64) {
+	pa := g.pa
+	rec := Pitch{Balls: g.balls, Strikes: g.strikes}
+	if g.draws == DrawsPitch {
+		rec.Round = g.round
+	}
+	g.pitches++
+	t, b, s, _ := pa.ch.at(g.balls, g.strikes)
+	u := src.Float64()
+	ended := true
+	switch {
+	case u < t:
+		ip := 1 - pa.pp.k - pa.pp.bb - pa.pp.hbp
+		if u/t*(pa.pp.hbp+ip) < pa.pp.hbp {
+			rec.Call = CallHitByPitch
+			pa.pitches = append(pa.pitches, rec)
+			pa.bl.HBP++
+			pa.pl.HBP++
+			g.force(pa.br)
+			g.endPlate(OutcomeHBP)
+		} else {
+			rec.Call = CallInPlay
+			pa.pitches = append(pa.pitches, rec)
+			pa.bl.AB++
+			g.endPlate(g.inPlay(src, pa.fld, pa.pp, pa.bl, pa.pl, pa.br))
+		}
+	case u < t+b:
+		rec.Call = CallBall
+		pa.pitches = append(pa.pitches, rec)
+		g.balls++
+		if g.balls == 4 {
+			pa.bl.BB++
+			pa.pl.BB++
+			g.force(pa.br)
+			g.endPlate(OutcomeBB)
+		} else {
+			ended = false
+		}
+	case u < t+b+s:
+		rec.Call = CallCalled
+		if (u-t-b)/s >= calledShare {
+			rec.Call = CallSwinging
+		}
+		pa.pitches = append(pa.pitches, rec)
+		g.strikes++
+		if g.strikes == 3 {
+			pa.bl.AB++
+			pa.bl.K++
+			pa.pl.K++
+			g.recordOuts(pa.fld, 1)
+			g.endPlate(OutcomeK)
+		} else {
+			ended = false
+		}
+	default:
+		rec.Call = CallFoul
+		pa.pitches = append(pa.pitches, rec)
+		if g.strikes < 2 {
+			g.strikes++
+		}
+		ended = false
+	}
+	if !ended && g.bases[0] != nil && g.bases[1] == nil {
+		g.steal(src)
+		if g.outs >= 3 {
+			g.voidPlate()
+		}
+	}
+	return rec, g.afterPitch()
+}
+
+// afterPitch ends the half-inning and the game when the pitch did, starts
+// the next half-inning and plate appearance, and answers the gap rule's
+// rounds to the next pitch.
+func (g *game) afterPitch() uint64 {
+	gap := uint64(GapPitch)
+	if g.runnersOn() > 0 {
+		gap = GapRunner
+	}
+	if g.outs >= 3 || g.over {
+		bat := g.batting()
+		g.lineScore[bat.idx] = append(g.lineScore[bat.idx], g.score[bat.idx]-g.halfStart)
+		switch {
+		case g.over:
+		case g.top && g.inning >= 9 && g.score[1] > g.score[0]:
+			g.over = true
+		case g.top:
+			g.top = false
+		case g.inning >= 9 && g.score[0] != g.score[1]:
+			g.over = true
+		default:
+			g.top = true
+			g.inning++
+		}
+		if g.over {
+			g.pa = nil
+			g.decide()
+			g.decided = true
+			return 0
+		}
+		gap = GapBreak
+	}
+	if g.pa == nil {
+		if gap == GapBreak {
+			g.beginHalf()
+		}
+		if g.beginPlate() {
+			gap = GapBreak
+		}
+	}
+	if g.draws == DrawsPitch {
+		g.round += gap
+	}
+	return gap
+}
+
+// endPlate ends the plate appearance in progress with its outcome and logs
+// it with its pitches; the next batter is due.
+func (g *game) endPlate(outcome string) {
+	pa := g.pa
+	g.endPlay(pa.before, pa.p.ID, pa.sp.ID, outcome, pa.pitches, 0)
+	pa.bat.next = (pa.bat.next + 1) % 9
+	g.pa = nil
+}
+
+// voidPlate ends a plate appearance the third out on the bases interrupted:
+// it counts nowhere, its pitches stay in the log on a play with no outcome,
+// and the same batter leads off the next half-inning.
+func (g *game) voidPlate() {
+	pa := g.pa
+	pa.bl.PA--
+	pa.fld.cur.batters--
+	g.endPlay(pa.before, pa.p.ID, pa.sp.ID, "", pa.pitches, 0)
+	g.pa = nil
 }
 
 // inPlay resolves a ball in play: home run, hit by type, or out by type.
-func (g *game) inPlay(fld *team, pp plateProbs, bl *BatterLine, pl *PitcherLine, br *runner) string {
-	if g.rng.Float64() < pp.hr {
+func (g *game) inPlay(src *rand.Rand, fld *team, pp plateProbs, bl *BatterLine, pl *PitcherLine, br *runner) string {
+	if src.Float64() < pp.hr {
 		bl.HR++
 		pl.H++
 		g.homer(br)
 		return OutcomeHR
 	}
-	if g.rng.Float64() < pp.hit {
+	if src.Float64() < pp.hit {
 		pl.H++
-		r := g.rng.Float64()
+		r := src.Float64()
 		switch {
 		case r < pp.triple:
 			bl.Triples++
@@ -233,18 +410,18 @@ func (g *game) inPlay(fld *team, pp plateProbs, bl *BatterLine, pl *PitcherLine,
 			return Outcome3B
 		case r < pp.triple+pp.double:
 			bl.Doubles++
-			g.double(br)
+			g.double(src, br)
 			return Outcome2B
 		default:
 			bl.Singles++
-			g.single(br)
+			g.single(src, br)
 			return Outcome1B
 		}
 	}
-	if g.rng.Float64() < anchorGB {
-		return g.groundOut(fld)
+	if src.Float64() < anchorGB {
+		return g.groundOut(src, fld)
 	}
-	outcome := g.airOut(fld)
+	outcome := g.airOut(src, fld)
 	if outcome == OutcomeSF {
 		bl.AB--
 		bl.SF++
@@ -335,7 +512,10 @@ func (g *game) beginPlay(rbi *BatterLine) {
 	g.curRBI = rbi
 }
 
-func (g *game) endPlay(before snapshot, batter, pitcher, outcome string) {
+// endPlay logs a play: a plate appearance with its pitches and outcome, an
+// interrupted one with its pitches and no outcome, or a steal on the pitch
+// numbered onPitch of the plate appearance in progress.
+func (g *game) endPlay(before snapshot, batter, pitcher, outcome string, pitches []Pitch, onPitch int) {
 	after := g.snapshot()
 	half := Top
 	if !g.top {
@@ -355,8 +535,14 @@ func (g *game) endPlay(before snapshot, batter, pitcher, outcome string) {
 		Charged:     g.curCharged,
 		Away:        g.score[0],
 		Home:        g.score[1],
-
-		Text: fmt.Sprintf("%s %d: %s %s", half, g.inning, batter, outcome)}
+		Pitches:     pitches,
+		OnPitch:     onPitch,
+	}
+	if outcome == "" {
+		p.Text = fmt.Sprintf("%s %d: %s, inning ended", half, g.inning, batter)
+	} else {
+		p.Text = fmt.Sprintf("%s %d: %s %s", half, g.inning, batter, outcome)
+	}
 	if g.curRuns > 0 {
 		p.Text += fmt.Sprintf(", %d scored", g.curRuns)
 	}
@@ -369,6 +555,7 @@ func (g *game) result() Result {
 		Version:    Version,
 		Seed:       g.seed,
 		Derivation: g.seed.Derivation(),
+		Draws:      g.draws,
 		Innings:    g.inning,
 		LineScore:  g.lineScore,
 		Batters:    map[string]BatterLine{},

@@ -3,6 +3,9 @@
 package prooftest
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"slices"
@@ -11,6 +14,7 @@ import (
 
 	"github.com/queone/mud-engine/beacon"
 	"github.com/queone/mud-engine/engine"
+	"github.com/queone/mud-engine/engine/model2"
 	"github.com/queone/mud-engine/proof"
 	"github.com/queone/mud-engine/proof/notary"
 )
@@ -33,7 +37,8 @@ const (
 )
 
 // Game builds the game's proof, its Day's commitment, and its box score; the
-// Day holds three games and this one is slot 2.
+// Day holds three games and this one is slot 2. It is a game from before
+// model 3: its pairing names no model or draws, so it plays model 2 whole.
 func Game() (proof.Proof, proof.Commitment, proof.BoxScore, error) {
 	var day []proof.Pairing
 	for i := range 3 {
@@ -56,7 +61,7 @@ func Game() (proof.Proof, proof.Commitment, proof.BoxScore, error) {
 		return proof.Proof{}, proof.Commitment{}, proof.BoxScore{}, err
 	}
 	game := uint64(Day*16 + Slot)
-	res, err := engine.Simulate(day[Slot].Home, day[Slot].Away, engine.DeriveBeaconSeed(Seed, Season, game, randomness))
+	res, err := model2.Simulate(day[Slot].Home, day[Slot].Away, engine.DeriveBeaconSeed(Seed, Season, game, randomness))
 	if err != nil {
 		return proof.Proof{}, proof.Commitment{}, proof.BoxScore{}, err
 	}
@@ -64,7 +69,7 @@ func Game() (proof.Proof, proof.Commitment, proof.BoxScore, error) {
 	bl := proof.BaseballLeague{ID: BaseballLeague, Name: "MFB"}
 	p := proof.Proof{GameID: GameID, BaseballLeague: bl, Season: Season, Day: Day, Slot: Slot, Game: game, BaseballLeagueSeed: Seed,
 		Derivation: engine.DerivationBeacon, Chain: beacon.ChainHash, Scheme: beacon.Scheme, Round: Round, RoundAt: beacon.TimeOf(Round),
-		Signature: Signature, Randomness: Randomness, InputsHash: hash, CommittedAt: committed, Inputs: own, Engine: engine.Version,
+		Signature: Signature, Randomness: Randomness, InputsHash: hash, CommittedAt: committed, Inputs: own, Engine: model2.Version,
 		Module: proof.Path + "@v0.1.0"}
 	c := proof.Commitment{BaseballLeague: bl, Season: Season, Day: Day, Round: Round, RoundAt: beacon.TimeOf(Round), InputsHash: hash, CommittedAt: committed, Inputs: inputs}
 	return p, c, Box(res, day[Slot]), nil
@@ -222,4 +227,112 @@ func AnchoredGame() (proof.Proof, proof.Commitment, proof.BoxScore, *notary.Nota
 	}
 	c.Anchor = &a
 	return p, c, box, n, nil
+}
+
+// Model3Game is a game under its own commitment whose pairing names engine
+// model 3 and whole-game draws, as a site plans a Day since model 3.
+func Model3Game() (proof.Proof, proof.Commitment, proof.BoxScore, error) {
+	return ownModel3(string(engine.DrawsGame))
+}
+
+// LiveGame is a game under its own commitment whose pairing names engine
+// model 3 and per-pitch draws: its first pitch draws on the bound round and
+// each later one on a fake round FakeVerify accepts, and its proof lists
+// every pitch's round and signature.
+func LiveGame() (proof.Proof, proof.Commitment, proof.BoxScore, error) {
+	return ownModel3(string(engine.DrawsPitch))
+}
+
+func ownModel3(draws string) (proof.Proof, proof.Commitment, proof.BoxScore, error) {
+	p, c, _, err := OwnGame()
+	if err != nil {
+		return p, c, proof.BoxScore{}, err
+	}
+	pair := proof.Pairing{Home: club("Home 2", "h2", 52), Away: club("Away 2", "a2", 48), Engine: engine.Version, Draws: draws}
+	inputs, err := json.Marshal(pair)
+	if err != nil {
+		return p, c, proof.BoxScore{}, err
+	}
+	hash, err := proof.HashInputs(inputs)
+	if err != nil {
+		return p, c, proof.BoxScore{}, err
+	}
+	randomness, err := beacon.Verify(Round, Signature)
+	if err != nil {
+		return p, c, proof.BoxScore{}, err
+	}
+	seed := engine.DeriveBeaconSeed(Seed, Season, uint64(Day*16+Slot), randomness)
+	var res engine.Result
+	if draws == string(engine.DrawsGame) {
+		res, err = engine.Simulate(pair.Home, pair.Away, seed)
+	} else {
+		res, err = engine.SimulateLive(pair.Home, pair.Away, seed, Round, func(round uint64) ([]byte, error) { return FakeVerify(round, SignatureOf(round)) })
+	}
+	if err != nil {
+		return p, c, proof.BoxScore{}, err
+	}
+	p.Inputs, p.InputsHash, p.Engine, p.Draws = inputs, hash, engine.Version, draws
+	c.Inputs, c.InputsHash = inputs, hash
+	if draws == string(engine.DrawsPitch) {
+		for _, play := range res.Plays {
+			for _, pt := range play.Pitches {
+				p.Rounds = append(p.Rounds, proof.PitchRound{Round: pt.Round, Signature: SignatureOf(pt.Round)})
+			}
+		}
+	}
+	return p, c, Box(res, pair), nil
+}
+
+// WithModel rewrites the committed pairing's engine model in the commitment
+// and the proof, hashes included, so only the engine link can object.
+func WithModel(p *proof.Proof, c *proof.Commitment, model string) error {
+	var pair proof.Pairing
+	if err := json.Unmarshal(c.Inputs, &pair); err != nil {
+		return err
+	}
+	pair.Engine = model
+	inputs, err := json.Marshal(pair)
+	if err != nil {
+		return err
+	}
+	hash, err := proof.HashInputs(inputs)
+	if err != nil {
+		return err
+	}
+	p.Inputs, p.InputsHash, p.Engine = inputs, hash, model
+	c.Inputs, c.InputsHash = inputs, hash
+	return nil
+}
+
+// SignatureOf is the signature FakeVerify accepts for a round: the pinned
+// real one for the pinned round, a fake one for any other.
+func SignatureOf(round uint64) string {
+	if round == Round {
+		return Signature
+	}
+	return FakeSignature(round)
+}
+
+// FakeSignature is the signature FakeVerify accepts for a round other than
+// the real one the fixtures pin.
+func FakeSignature(round uint64) string {
+	var buf [8]byte
+	binary.BigEndian.PutUint64(buf[:], round)
+	sum := sha256.Sum256(append([]byte("signature"), buf[:]...))
+	return hex.EncodeToString(sum[:])
+}
+
+// FakeVerify verifies the real pinned round as the beacon does and any other
+// round by its fake signature, answering randomness of the round's own.
+func FakeVerify(round uint64, signature string) ([]byte, error) {
+	if round == Round {
+		return beacon.Verify(round, signature)
+	}
+	if signature != FakeSignature(round) {
+		return nil, fmt.Errorf("round %d's signature does not verify", round)
+	}
+	var buf [8]byte
+	binary.BigEndian.PutUint64(buf[:], round)
+	sum := sha256.Sum256(append([]byte("randomness"), buf[:]...))
+	return sum[:], nil
 }

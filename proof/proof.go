@@ -18,6 +18,7 @@ import (
 
 	"github.com/queone/mud-engine/beacon"
 	"github.com/queone/mud-engine/engine"
+	"github.com/queone/mud-engine/engine/model2"
 )
 
 // Path is this module's import path.
@@ -29,6 +30,41 @@ const Path = "github.com/queone/mud-engine"
 type Pairing struct {
 	Home engine.Club `json:"home"`
 	Away engine.Club `json:"away"`
+	// Engine and Draws are the engine model and the draw mode the game plays
+	// under, committed with its inputs since model 3, so neither can be chosen
+	// once a round is known; a pairing naming neither, from before, plays model
+	// 2 whole from one round.
+	Engine string `json:"engine,omitempty"`
+	Draws  string `json:"draws,omitempty"`
+}
+
+// FirstModel is the engine model a pairing that names none plays under.
+const FirstModel = "2"
+
+// CommittedModel is the engine model a pairing binds: FirstModel when it
+// names none.
+func CommittedModel(pair Pairing) string {
+	if pair.Engine == "" {
+		return FirstModel
+	}
+	return pair.Engine
+}
+
+// CommittedDraws is the draw mode a pairing binds: whole-game draws when it
+// names none.
+func CommittedDraws(pair Pairing) string {
+	if pair.Draws == "" {
+		return string(engine.DrawsGame)
+	}
+	return pair.Draws
+}
+
+// drawsOf is a proof's draw mode, whole-game when it names none.
+func drawsOf(draws string) string {
+	if draws == "" {
+		return string(engine.DrawsGame)
+	}
+	return draws
 }
 
 // HashInputs is the hex SHA-256 of a Day's inputs in compact JSON, the form
@@ -75,6 +111,17 @@ type Proof struct {
 	// ScopeGame for its own, or ScopeDay, or empty from a site that predates
 	// scopes, for its Day's.
 	CommitmentScope string `json:"commitment_scope,omitempty"`
+	// Draws is the game's draw mode, game or pitch; empty is game. Rounds are
+	// a per-pitch game's rounds in pitch order, each with its signature, the
+	// first the commitment's bound round, so the game verifies without a relay.
+	Draws  string       `json:"draws,omitempty"`
+	Rounds []PitchRound `json:"rounds,omitempty"`
+}
+
+// PitchRound is one pitch's beacon round and its signature.
+type PitchRound struct {
+	Round     uint64 `json:"round"`
+	Signature string `json:"signature"`
 }
 
 // The scopes a commitment can cover: a Day's games, or one game.
@@ -214,23 +261,37 @@ func (r Report) Anchored() bool {
 type Verifier func(round uint64, signature string) ([]byte, error)
 
 // Check replays a game from its proof and checks every link: the engine
-// model, the proof against its Day's commitment, the commitment's anchor
-// under trust and its round after the anchor's time, the Day's inputs against
-// their hash, the beacon round's signature and randomness, the seed, and the
-// replay against the served box score. A proof from another engine model
-// names the verifier version that replays it instead. A Day with no anchor
-// reports that link as none, and the rest still decide the verdict.
+// model and draw mode against the ones its commitment bound, the proof
+// against its commitment, the commitment's anchor under trust and its round
+// after the anchor's time, the committed inputs against their hash, each
+// beacon round's signature and randomness, the seed, and the replay against
+// the served box score, through model 2 or model 3 as the commitment says. A
+// per-pitch game's rounds are checked by signature, by sequence from the
+// bound round under the gap rule, and by count. A proof from a model this
+// verifier does not replay names the verifier version that does. A
+// commitment with no anchor reports that link as none, and the rest still
+// decide the verdict.
 func Check(p Proof, c Commitment, box BoxScore, verify Verifier, trust Trust) Report {
 	r := Report{GameID: p.GameID}
 	add := func(name string, ok bool, detail string, args ...any) {
 		r.Links = append(r.Links, Link{Name: name, OK: ok, Detail: fmt.Sprintf(detail, args...)})
 	}
 
-	engineOK := p.Engine == engine.Version
-	if engineOK {
-		add("engine", true, "model %s", p.Engine)
-	} else {
-		add("engine", false, "the game used engine model %s and this verifier replays model %s; %s", p.Engine, engine.Version, otherVerifier(p.Module))
+	pair, pairOK := pairingOf(p, c)
+	model, draws := CommittedModel(pair), CommittedDraws(pair)
+	engineOK := false
+	switch {
+	case !pairOK:
+		add("engine", false, "the committed inputs name no game for this proof; see the inputs link")
+	case p.Engine != model:
+		add("engine", false, "the game's commitment binds engine model %s, the proof names %s", model, p.Engine)
+	case drawsOf(p.Draws) != draws:
+		add("engine", false, "the game's commitment binds %s draws, the proof names %s", draws, drawsOf(p.Draws))
+	case model != FirstModel && model != engine.Version:
+		add("engine", false, "the game used engine model %s and this verifier replays models %s and %s; %s", model, FirstModel, engine.Version, otherVerifier(p.Module))
+	default:
+		engineOK = true
+		add("engine", true, "model %s, %s draws", model, draws)
 	}
 
 	game := scopeOf(c.Scope) == ScopeGame
@@ -289,6 +350,30 @@ func Check(p Proof, c Commitment, box BoxScore, verify Verifier, trust Trust) Re
 		add("beacon", true, "round %d, published %s, signature verified", p.Round, beacon.TimeOf(p.Round).UTC().Format(time.RFC3339))
 	}
 	beaconOK := err == nil && p.Chain == beacon.ChainHash && hex.EncodeToString(randomness) == p.Randomness
+	pitchRandomness := map[int][]byte{}
+	if beaconOK && engineOK && draws == string(engine.DrawsPitch) {
+		switch {
+		case len(p.Rounds) == 0:
+			beaconOK = false
+			add("rounds", false, "a per-pitch game lists no rounds")
+		case p.Rounds[0].Round != p.Round || p.Rounds[0].Signature != p.Signature:
+			beaconOK = false
+			add("rounds", false, "the first pitch's round is %d, not the bound round %d with its signature", p.Rounds[0].Round, p.Round)
+		default:
+			for i, pr := range p.Rounds {
+				r, err := verify(pr.Round, pr.Signature)
+				if err != nil {
+					beaconOK = false
+					add("rounds", false, "pitch %d's round %d: %v", i+1, pr.Round, err)
+					break
+				}
+				pitchRandomness[i] = r
+			}
+			if beaconOK {
+				add("rounds", true, "%d rounds, every signature verified", len(p.Rounds))
+			}
+		}
+	}
 
 	seedOK := p.Derivation == engine.DerivationBeacon && p.Game == uint64(p.Day*16+p.Slot)
 	if seedOK {
@@ -301,7 +386,30 @@ func Check(p Proof, c Commitment, box BoxScore, verify Verifier, trust Trust) Re
 		add("replay", false, "not replayed until the links above pass")
 		return r
 	}
-	res, err := engine.Simulate(inputs.Home, inputs.Away, engine.DeriveBeaconSeed(p.BaseballLeagueSeed, p.Season, p.Game, randomness))
+	seed := engine.DeriveBeaconSeed(p.BaseballLeagueSeed, p.Season, p.Game, randomness)
+	var res engine.Result
+	pitches := 0
+	switch {
+	case model == FirstModel:
+		res, err = model2.Simulate(inputs.Home, inputs.Away, seed)
+	case draws == string(engine.DrawsGame):
+		res, err = engine.Simulate(inputs.Home, inputs.Away, seed)
+	default:
+		res, err = engine.SimulateLive(inputs.Home, inputs.Away, seed, p.Round, func(round uint64) ([]byte, error) {
+			i := pitches
+			pitches++
+			switch {
+			case i >= len(p.Rounds):
+				return nil, fmt.Errorf("the proof lists %d rounds and names none for pitch %d", len(p.Rounds), i+1)
+			case p.Rounds[i].Round != round:
+				return nil, fmt.Errorf("pitch %d lists round %d, the gap rule gives %d", i+1, p.Rounds[i].Round, round)
+			}
+			return pitchRandomness[i], nil
+		})
+		if err == nil && pitches != len(p.Rounds) {
+			err = fmt.Errorf("the proof lists %d rounds, the game threw %d pitches", len(p.Rounds), pitches)
+		}
+	}
 	if err != nil {
 		add("replay", false, "the replay failed: %v", err)
 		return r
@@ -310,8 +418,27 @@ func Check(p Proof, c Commitment, box BoxScore, verify Verifier, trust Trust) Re
 		add("replay", false, "%s", problem)
 		return r
 	}
-	add("replay", true, "%d-%d, every inning, batter, and pitcher line matches the box score", res.Away.Runs, res.Home.Runs)
+	if pitches > 0 {
+		add("replay", true, "%d-%d on %d pitches, every inning, batter, and pitcher line matches the box score", res.Away.Runs, res.Home.Runs, pitches)
+	} else {
+		add("replay", true, "%d-%d, every inning, batter, and pitcher line matches the box score", res.Away.Runs, res.Home.Runs)
+	}
 	return r
+}
+
+// pairingOf reads the game's committed pairing without checking it: a
+// game's commitment holds it alone, a Day's holds it at the game's slot.
+func pairingOf(p Proof, c Commitment) (Pairing, bool) {
+	var pair Pairing
+	raw := c.Inputs
+	if scopeOf(c.Scope) != ScopeGame {
+		var day []json.RawMessage
+		if err := json.Unmarshal(c.Inputs, &day); err != nil || p.Slot < 0 || p.Slot >= len(day) {
+			return pair, false
+		}
+		raw = day[p.Slot]
+	}
+	return pair, json.Unmarshal(raw, &pair) == nil
 }
 
 // gameInputs checks the committed inputs against their hash and finds the

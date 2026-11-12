@@ -153,7 +153,7 @@ func TestStatLinesAgreeWithTheLogAndEachOther(t *testing.T) {
 				fld = 0
 			}
 			outs[fld] += p.OutsAfter - p.OutsBefore
-			if p.Outcome != OutcomeSB && p.Outcome != OutcomeCS {
+			if p.Outcome != OutcomeSB && p.Outcome != OutcomeCS && p.Outcome != "" {
 				pas[p.Batter]++
 			}
 		}
@@ -360,6 +360,7 @@ var golden = map[string]struct {
 	digest     string
 }{
 	"2": {3, 4, "dc9a57ffff45818f99ddd650f638cb37ef0d29ac86b7a8cde7c04813dc56e6e1"},
+	"3": {3, 5, "21fa3e240249e3911d8aacc0e7221b4479d5a610820f6376365ba1c808b227ff"},
 }
 
 func TestGoldenGameIsPinnedForThisVersion(t *testing.T) {

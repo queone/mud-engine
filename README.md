@@ -12,15 +12,18 @@ Pick a game on the site and run the newest verifier:
 go run github.com/queone/mud-engine/cmd/mud-verify@latest https://mudball.one/games/1234
 ```
 
-The newest verifier replays engine model 2, the model of every game so far. A proof from another model names the
-verifier version that replays it, when it names one other than the verifier running.
+The newest verifier replays engine model 2, the model of every game before module v0.7.0, and model 3, which plays
+each pitch through the count, whole from one round or live with a round for every pitch. A proof from a model it
+does not replay names the verifier version that does, when it names one other than the verifier running.
 
-It fetches the game's proof, the commitment it played under, and its box score, and checks seven links. A game
+It fetches the game's proof, the commitment it played under, and its box score, and checks seven links, eight for a game played pitch by pitch. A game
 committed on its own, just before its scheduled start, has its own commitment at `/api/games/ID/commitment`; a game
 played under its Day's commitment, as every game was before games started at their own times, has its Day's.
 
 
-- engine: the game used this verifier's engine model; a game from another model names the version that replays it.
+- engine: the proof names the engine model and the draw mode the game's commitment bound, so neither could be
+  chosen once a round was known; a commitment from before model 3 binds model 2 and whole-game draws. A model this
+  verifier does not replay names the version that does.
 - commitment: the game's round and inputs hash are the ones its commitment bound, and a game's own commitment is for
   its slot and names its scheduled start.
 - anchor: the commitment existed outside the site before its round: two RFC 3161 timestamp authorities, of
@@ -35,10 +38,13 @@ played under its Day's commitment, as every game was before games started at the
   its slot among its Day's.
 - beacon: the drand quicknet round's signature verifies against the chain's public key, and the randomness is the
   SHA-256 of the signature.
+- rounds, for a game played pitch by pitch: every pitch's round signature verifies, the first is the bound round,
+  and the sequence follows the gap rule from it, 5 rounds between pitches with the bases empty, 7 with a runner on,
+  and 40 after a half-inning or a mid-inning pitching change, so the site could not wait for a better round.
 - seed: the seed derives from the baseball league's public seed, the season, the game number (Day*16+slot), and the
   round's randomness.
-- replay: the engine replays the game from the inputs and the seed, and every inning, batter line, and pitcher line
-  matches the box score. Each box score line names its player for the replay by `engine_player`, the player's id in
+- replay: the model the commitment names replays the game from the inputs and the seed, model 3 pitch by pitch,
+  and every inning, batter line, and pitcher line matches the box score. Each box score line names its player for the replay by `engine_player`, the player's id in
   the game's inputs; a box score saved before `engine_player` existed names it by a string `player` instead. A line
   whose `engine_player` is present but not a nonempty string, or that names no id at all, fails this link on that
   line, and the game is not verified.
@@ -50,7 +56,8 @@ BOXSCORE` checks saved copies of the three answers offline, including copies sav
 
 - No one, the site included, could know the game before its drand round was published, barring collusion of a
   threshold of the League of Entropy's members (https://drand.love).
-- The game's result follows from its committed inputs and that round, with this engine.
+- The game's result follows from its committed inputs and that round, with the engine model its commitment names,
+  and a game played pitch by pitch from the rounds the gap rule fixes after it.
 - A changed result, inputs, or round no longer verifies: results are tamper-evident, not tamper-proof.
 - An anchored commitment existed outside the site before its round, so even a game played late, after an outage
   or in a new baseball league's catch-up, was unknowable when committed.
@@ -61,7 +68,8 @@ BOXSCORE` checks saved copies of the three answers offline, including copies sav
 
 ## Packages
 
-- `engine`: one game's simulation from two clubs and a seed.
+- `engine`: one game's simulation from two clubs and a seed, pitch by pitch at model 3, played whole or a pitch at
+  a time from a saved state; `engine/model2` is the frozen model every earlier game played under.
 - `beacon`: drand quicknet constants, the pinned public key, round verification, and a relay client.
 - `proof`: the input format, the inputs hash, the shapes the site serves, `Fetch`, `Check`, the anchor's
   statement and checks, and the pinned trust: the log's key and the timestamp authorities' roots.

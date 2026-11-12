@@ -10,15 +10,15 @@ Run the newest version, with nothing to install:
 go run github.com/queone/mud-engine/cmd/mud-verify@latest https://mudball.one/games/1234
 ```
 
-The newest version replays engine model 2 and reads box scores in both shapes the site has served, so it checks
-every game played so far, online or from saved copies.
+The newest version replays engine models 2 and 3, whole or pitch by pitch, and reads box scores in both shapes the
+site has served, so it checks every game played so far, online or from saved copies.
 
 ## Help
 
 ### Usage
 
 ```text
-mud-verify v0.6.0
+mud-verify v0.7.0
 Replay a Mud Baseball game and check every link of its proof
 github.com/queone/mud-engine/cmd/mud-verify
 

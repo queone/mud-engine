@@ -1,7 +1,8 @@
 package engine
 
-// Play is one logged event: a plate appearance or a stolen-base attempt.
-// Bases hold the ids of the runners on first, second, and third, or "".
+// Play is one logged event: a plate appearance, with Outcome "" for one the
+// third out on the bases interrupted, or a stolen-base attempt. Bases hold
+// the ids of the runners on first, second, and third, or "".
 type Play struct {
 	Inning      int       `json:"inning"`
 	Half        string    `json:"half"`
@@ -17,6 +18,11 @@ type Play struct {
 	Away        int       `json:"away"`
 	Home        int       `json:"home"`
 	Text        string    `json:"text"`
+	// Pitches are a plate appearance's pitches in order, none on a play
+	// from a game that did not record them; OnPitch numbers the pitch of the
+	// plate appearance in progress a steal attempt rode, from 1.
+	Pitches []Pitch `json:"pitches,omitempty"`
+	OnPitch int     `json:"on_pitch,omitempty"`
 }
 
 // Play outcomes.
