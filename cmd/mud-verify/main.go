@@ -20,7 +20,7 @@ import (
 
 // programVersion is the verifier's release version; the build checks it, and
 // release prep bumps it.
-const programVersion = "0.7.1"
+const programVersion = "0.8.0"
 
 // usage is the help, in the shape the build's help probe checks, and the text
 // of the Usage block in cmd/mud-verify/README.md.
@@ -126,7 +126,7 @@ func run(args []string, stdout, stderr io.Writer, client *http.Client) int {
 	}
 
 	report := proof.Check(p, c, box, beacon.Verify, proof.DefaultTrust())
-	fmt.Fprintf(stdout, "game %d, %s season %d Day %d, slot %d; verifier engine models %s and %s\n", p.GameID, p.BaseballLeague.Name, p.Season, p.Day, p.Slot, proof.FirstModel, engine.Version)
+	fmt.Fprintf(stdout, "game %d, %s season %d Day %d, slot %d; verifier engine model %s\n", p.GameID, p.BaseballLeague.Name, p.Season, p.Day, p.Slot, engine.Version)
 	for _, l := range report.Links {
 		verdict := "passed"
 		switch {

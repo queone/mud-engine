@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/rand/v2"
 )
 
 // Game is a game in progress, played a pitch at a time: started with Start,
@@ -17,17 +16,22 @@ type Game struct {
 }
 
 // Start begins a game: the away club bats first. In per-pitch draws, first is
-// the round the first pitch draws on, the commitment's bound round; the game
-// mode ignores it.
-func Start(home, away Club, seed Seed, draws Draws, first uint64) (*Game, error) {
+// the round the first pitch draws on, the commitment's bound round, and
+// bound is ignored; in game draws, bound is the bound round's randomness
+// every pitch draws with, or empty for a game with no beacon round, and
+// first is ignored.
+func Start(home, away Club, seed Seed, draws Draws, first uint64, bound []byte) (*Game, error) {
 	if draws != DrawsGame && draws != DrawsPitch {
 		return nil, fmt.Errorf("engine: draws %q is neither %q nor %q", draws, DrawsGame, DrawsPitch)
+	}
+	if draws == DrawsGame && len(bound) > maxRandomness {
+		return nil, fmt.Errorf("engine: the bound round's randomness is %d bytes, more than %d", len(bound), maxRandomness)
 	}
 	if err := checkClubs(home, away); err != nil {
 		return nil, err
 	}
 	gm := &Game{home: home, away: away}
-	gm.g = newGame(&gm.away, &gm.home, seed, draws, first)
+	gm.g = newGame(&gm.away, &gm.home, seed, draws, first, bound)
 	return gm, nil
 }
 
@@ -44,20 +48,24 @@ func (gm *Game) Next() (uint64, bool) {
 }
 
 // Pitch throws the next pitch. In per-pitch draws randomness is the round's,
-// the one Next named; in game draws it is ignored. It answers the pitch.
+// the one Next named; in game draws it is ignored and the pitch draws with
+// the bound round's. It answers the pitch.
 func (gm *Game) Pitch(randomness []byte) (Pitch, error) {
 	g := gm.g
 	if g.over {
 		return Pitch{}, errors.New("engine: the game is over")
 	}
-	src := g.rng
+	d := drawer{seed: g.seed, randomness: g.bound, event: uint64(g.pitches)}
 	if g.draws == DrawsPitch {
 		if len(randomness) == 0 {
 			return Pitch{}, fmt.Errorf("engine: pitch %d needs round %d's randomness", g.pitches+1, g.round)
 		}
-		src = pitchStream(g.seed, randomness, g.pitches)
+		if len(randomness) > maxRandomness {
+			return Pitch{}, fmt.Errorf("engine: round %d's randomness is %d bytes, more than %d", g.round, len(randomness), maxRandomness)
+		}
+		d.randomness = randomness
 	}
-	p, _ := g.pitch(src)
+	p, _ := g.pitch(d)
 	return p, nil
 }
 
@@ -89,8 +97,8 @@ type State struct {
 	Plays      []Play       `json:"plays"`
 	Over       bool         `json:"over"`
 	Pitches    int          `json:"pitches"`
-	Round      uint64       `json:"round,omitempty"`  // per-pitch draws: the next pitch's round
-	Stream     []byte       `json:"stream,omitempty"` // game draws: the stream's state
+	Round      uint64       `json:"round,omitempty"`      // per-pitch draws: the next pitch's round
+	Randomness []byte       `json:"randomness,omitempty"` // game draws: the bound round's randomness
 	Teams      [2]TeamState `json:"teams"`
 	Plate      *PlateState  `json:"plate,omitempty"`
 }
@@ -145,8 +153,8 @@ func (gm *Game) State() State {
 	}
 	if g.draws == DrawsPitch {
 		st.Round = g.round
-	} else if !g.over {
-		st.Stream, _ = g.pcg.MarshalBinary()
+	} else {
+		st.Randomness = g.bound
 	}
 	for i, t := range g.clubs {
 		ts := TeamState{Next: t.next, NextOther: t.nextOther, Order: t.order, LeadPitcher: t.leadPitcher, LosePitcher: t.losePitcher,
@@ -190,12 +198,11 @@ func Resume(st State, home, away Club) (*Game, error) {
 	g := &game{seed: Seed{A: st.Seed.A, B: st.Seed.B, derivation: st.Derivation}, draws: st.Draws, inning: st.Inning, top: st.Top, outs: st.Outs,
 		balls: st.Balls, strikes: st.Strikes, score: st.Score, lineScore: st.LineScore, halfStart: st.HalfStart, plays: st.Plays, over: st.Over, decided: st.Over,
 		pitches: st.Pitches, round: st.Round, chains: map[[2]string]chain{}}
-	if st.Draws == DrawsGame && !st.Over {
-		pcg := rand.NewPCG(0, 0)
-		if err := pcg.UnmarshalBinary(st.Stream); err != nil {
-			return nil, fmt.Errorf("engine: the state's stream: %w", err)
+	if st.Draws == DrawsGame {
+		if len(st.Randomness) > maxRandomness {
+			return nil, fmt.Errorf("engine: the state's randomness is %d bytes, more than %d", len(st.Randomness), maxRandomness)
 		}
-		g.pcg, g.rng = pcg, rand.New(pcg)
+		g.bound = st.Randomness
 	}
 	players := map[string]Player{}
 	for _, c := range []*Club{&gm.away, &gm.home} {

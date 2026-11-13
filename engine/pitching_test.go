@@ -26,7 +26,7 @@ func TestSaveSituationFollowsLeadAndRunners(t *testing.T) {
 
 func TestRelieverSelectionFollowsTheUsageRules(t *testing.T) {
 	away, home := averageClub("Away", "a"), averageClub("Home", "h")
-	g := newGame(&away, &home, RawSeed(1, 1), DrawsGame, 0)
+	g := newGame(&away, &home, RawSeed(1, 1), DrawsGame, 0, nil)
 	fld := g.clubs[1]
 	pick := func(inning, homeLead int) string {
 		g.inning = inning
@@ -61,7 +61,7 @@ func TestRelieverSelectionFollowsTheUsageRules(t *testing.T) {
 	if got := pick(11, 0); got != "" {
 		t.Errorf("exhausted bullpen picked %q, want the current pitcher to stay", got)
 	}
-	g2 := newGame(&away, &home, RawSeed(1, 1), DrawsGame, 0)
+	g2 := newGame(&away, &home, RawSeed(1, 1), DrawsGame, 0, nil)
 	f2 := g2.clubs[1]
 	g2.inning, g2.score = 9, [2]int{0, 5}
 	if p := g2.pickReliever(f2); p.ID != "hr1" {
@@ -76,7 +76,7 @@ func TestRelieverSelectionFollowsTheUsageRules(t *testing.T) {
 
 func TestStarterLeavesAtTheLimitOrAfterFiveEarnedRuns(t *testing.T) {
 	away, home := averageClub("Away", "a"), averageClub("Home", "h")
-	g := newGame(&away, &home, RawSeed(1, 1), DrawsGame, 0)
+	g := newGame(&away, &home, RawSeed(1, 1), DrawsGame, 0, nil)
 	fld := g.clubs[1]
 	g.inning = 3
 	fld.cur.batters = startLimit(fld.club.Starter.Pitching)
@@ -84,7 +84,7 @@ func TestStarterLeavesAtTheLimitOrAfterFiveEarnedRuns(t *testing.T) {
 	if fld.cur.pitcher.ID == "hsp" {
 		t.Error("starter stayed past his batters-faced limit")
 	}
-	g = newGame(&away, &home, RawSeed(1, 1), DrawsGame, 0)
+	g = newGame(&away, &home, RawSeed(1, 1), DrawsGame, 0, nil)
 	fld = g.clubs[1]
 	g.inning = 4
 	fld.pitcher("hsp").ER = starterHookER
@@ -92,7 +92,7 @@ func TestStarterLeavesAtTheLimitOrAfterFiveEarnedRuns(t *testing.T) {
 	if fld.cur.pitcher.ID == "hsp" {
 		t.Error("starter stayed after five earned runs")
 	}
-	g = newGame(&away, &home, RawSeed(1, 1), DrawsGame, 0)
+	g = newGame(&away, &home, RawSeed(1, 1), DrawsGame, 0, nil)
 	fld = g.clubs[1]
 	g.inning = 4
 	fld.pitcher("hsp").ER = starterHookER - 1
@@ -106,7 +106,7 @@ func TestStarterLeavesAtTheLimitOrAfterFiveEarnedRuns(t *testing.T) {
 
 func TestChangePitcherAwardsAHoldToASetupManWhoKeptTheLead(t *testing.T) {
 	away, home := averageClub("Away", "a"), averageClub("Home", "h")
-	g := newGame(&away, &home, RawSeed(1, 1), DrawsGame, 0)
+	g := newGame(&away, &home, RawSeed(1, 1), DrawsGame, 0, nil)
 	fld := g.clubs[1]
 	g.inning, g.score = 8, [2]int{1, 3}
 	g.changePitcher(fld) // starter out, setup in with a two-run lead

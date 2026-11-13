@@ -34,8 +34,12 @@ func mustJSON(t *testing.T, v any) string {
 func TestAGameReplaysWholeAndPitchByPitch(t *testing.T) {
 	home, away := averageClub("Home", "h"), averageClub("Away", "a")
 	seed := DeriveSeed(7, 1, 17)
-	whole := mustSimulate(t, home, away, seed)
-	gm, err := Start(home, away, seed, DrawsGame, 0)
+	bound := fakeRandomness(4000)
+	whole, err := Simulate(home, away, seed, bound)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gm, err := Start(home, away, seed, DrawsGame, 0, bound)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +69,7 @@ func TestAGameReplaysWholeAndPitchByPitch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	gm, err = Start(home, away, seed, DrawsPitch, 5000)
+	gm, err = Start(home, away, seed, DrawsPitch, 5000, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +83,7 @@ func TestAGameReplaysWholeAndPitchByPitch(t *testing.T) {
 		t.Fatal("a live game played pitch by pitch differs from SimulateLive")
 	}
 	if mustJSON(t, live.Plays) == mustJSON(t, whole.Plays) {
-		t.Error("per-pitch draws played the same game as the whole-game stream")
+		t.Error("per-pitch draws played the same game as the bound round's")
 	}
 	pitches := 0
 	for _, p := range live.Plays {
@@ -120,7 +124,11 @@ func TestAGameResumesFromItsStateAfterEveryPitch(t *testing.T) {
 	for _, draws := range []Draws{DrawsGame, DrawsPitch} {
 		var want Result
 		if draws == DrawsGame {
-			want = mustSimulate(t, home, away, seed)
+			r, err := Simulate(home, away, seed, fakeRandomness(9000))
+			if err != nil {
+				t.Fatal(err)
+			}
+			want = r
 		} else {
 			r, err := SimulateLive(home, away, seed, 9000, fakeRounds)
 			if err != nil {
@@ -128,7 +136,7 @@ func TestAGameResumesFromItsStateAfterEveryPitch(t *testing.T) {
 			}
 			want = r
 		}
-		gm, err := Start(home, away, seed, draws, 9000)
+		gm, err := Start(home, away, seed, draws, 9000, fakeRandomness(9000))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -161,21 +169,32 @@ func TestAGameResumesFromItsStateAfterEveryPitch(t *testing.T) {
 		raw, _ := json.Marshal(gm)
 		var st State
 		_ = json.Unmarshal(raw, &st)
-		if !st.Over || st.Plate != nil || st.Stream != nil {
-			t.Errorf("%s: the finished state is over %v with a plate appearance %v and a stream of %d bytes", draws, st.Over, st.Plate != nil, len(st.Stream))
+		if !st.Over || st.Plate != nil {
+			t.Errorf("%s: the finished state is over %v with a plate appearance %v", draws, st.Over, st.Plate != nil)
+		}
+		if bound := st.Randomness; (draws == DrawsGame) != (string(bound) == string(fakeRandomness(9000))) {
+			t.Errorf("%s: the state keeps randomness %x", draws, bound)
 		}
 	}
-	gm, _ := Start(home, away, seed, DrawsGame, 0)
+	gm, _ := Start(home, away, seed, DrawsGame, 0, nil)
 	st := gm.State()
-	st.Version = "2"
-	if _, err := Resume(st, home, away); err == nil {
-		t.Error("a model 2 state resumed on model 3")
+	for _, old := range []string{"2", "3"} {
+		st.Version = old
+		if _, err := Resume(st, home, away); err == nil {
+			t.Errorf("a model %s state resumed on model %s", old, Version)
+		}
 	}
-	gm, _ = Start(home, away, seed, DrawsPitch, 1)
+	if _, err := Start(home, away, seed, DrawsGame, 0, make([]byte, maxRandomness+1)); err == nil {
+		t.Error("a game started with randomness too long for its draws' length byte")
+	}
+	gm, _ = Start(home, away, seed, DrawsPitch, 1, nil)
 	if _, err := gm.Pitch(nil); err == nil {
 		t.Error("a per-pitch game threw without its round's randomness")
 	}
-	if _, err := Start(home, away, seed, Draws("inning"), 0); err == nil {
+	if _, err := gm.Pitch(make([]byte, maxRandomness+1)); err == nil {
+		t.Error("a per-pitch game threw with randomness too long for its draws' length byte")
+	}
+	if _, err := Start(home, away, seed, Draws("inning"), 0, nil); err == nil {
 		t.Error("an unknown draw mode started a game")
 	}
 	if _, err := SimulateLive(home, away, seed, 1, func(uint64) ([]byte, error) { return nil, errors.New("no relay") }); err == nil {
@@ -184,7 +203,9 @@ func TestAGameResumesFromItsStateAfterEveryPitch(t *testing.T) {
 }
 
 // Each pitch draws on its own round: a change to one round's randomness
-// leaves every earlier pitch as it was and changes that pitch or a later one.
+// moves that pitch's draws and leaves every earlier pitch as it was; a
+// changed draw may still give the same call, so across the pitches tried
+// most change the game.
 func TestEachPitchDrawsOnItsOwnRound(t *testing.T) {
 	home, away := averageClub("Home", "h"), averageClub("Away", "a")
 	seed := DeriveSeed(7, 1, 23)
@@ -196,8 +217,16 @@ func TestEachPitchDrawsOnItsOwnRound(t *testing.T) {
 	for _, p := range base.Plays {
 		pitches = append(pitches, p.Pitches...)
 	}
-	for _, n := range []int{0, 1, 40, 150} {
+	tried, changed := 0, 0
+	for _, n := range []int{0, 1, 7, 23, 40, 99, 150, 201} {
+		if n >= len(pitches) {
+			continue
+		}
+		tried++
 		target := pitches[n].Round
+		if drawAt(seed, fakeRandomness(target), uint64(n), purposeCall, 0) == drawAt(seed, fakeRandomness(target+1_000_000), uint64(n), purposeCall, 0) {
+			t.Fatalf("pitch %d's call draw ignores its round", n)
+		}
 		moved, err := SimulateLive(home, away, seed, 100, func(round uint64) ([]byte, error) {
 			if round == target {
 				return fakeRandomness(round + 1_000_000), nil
@@ -216,9 +245,12 @@ func TestEachPitchDrawsOnItsOwnRound(t *testing.T) {
 				t.Fatalf("changing pitch %d's round changed pitch %d", n, i)
 			}
 		}
-		if mustJSON(t, got) == mustJSON(t, pitches) {
-			t.Errorf("changing pitch %d's round changed nothing", n)
+		if mustJSON(t, moved) != mustJSON(t, base) {
+			changed++
 		}
+	}
+	if tried < 6 || changed*2 < tried {
+		t.Errorf("changing one pitch's round changed the game %d times of %d", changed, tried)
 	}
 }
 
@@ -228,7 +260,7 @@ func TestEachPitchDrawsOnItsOwnRound(t *testing.T) {
 // is the one Start was given.
 func TestTheGapRuleFollowsTheState(t *testing.T) {
 	home, away := averageClub("Home", "h"), averageClub("Away", "a")
-	gm, err := Start(home, away, DeriveSeed(7, 1, 29), DrawsPitch, 777)
+	gm, err := Start(home, away, DeriveSeed(7, 1, 29), DrawsPitch, 777, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

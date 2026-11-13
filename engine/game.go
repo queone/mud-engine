@@ -4,10 +4,7 @@
 // time.
 package engine
 
-import (
-	"fmt"
-	"math/rand/v2"
-)
+import "fmt"
 
 // Result is everything one simulated game produced.
 type Result struct {
@@ -65,8 +62,7 @@ type game struct {
 	clubs     [2]*team
 	seed      Seed
 	draws     Draws
-	pcg       *rand.PCG  // the whole game's stream in DrawsGame, saved between pitches
-	rng       *rand.Rand // draws from pcg in DrawsGame
+	bound     []byte // DrawsGame: the bound round's randomness every pitch draws with, or empty
 	inning    int
 	top       bool
 	bases     [3]*runner
@@ -88,6 +84,7 @@ type game struct {
 	curRuns    int
 	curCharged []string
 	curRBI     *BatterLine
+	curToward  string
 }
 
 // plateCtx is the plate appearance in progress.
@@ -104,10 +101,11 @@ type plateCtx struct {
 	pitches  []Pitch
 }
 
-// Simulate plays one game whole, its draws from one stream of the seed. The
-// away club bats first.
-func Simulate(home, away Club, seed Seed) (Result, error) {
-	gm, err := Start(home, away, seed, DrawsGame, 0)
+// Simulate plays one game whole in game draws, every pitch drawing with
+// randomness, the bound round's, or none for a game with no beacon round.
+// The away club bats first.
+func Simulate(home, away Club, seed Seed, randomness []byte) (Result, error) {
+	gm, err := Start(home, away, seed, DrawsGame, 0, randomness)
 	if err != nil {
 		return Result{}, err
 	}
@@ -123,7 +121,7 @@ func Simulate(home, away Club, seed Seed) (Result, error) {
 // randomness fetched by round from rounds, the first pitch on first: a
 // replay of a game played live.
 func SimulateLive(home, away Club, seed Seed, first uint64, rounds func(round uint64) ([]byte, error)) (Result, error) {
-	gm, err := Start(home, away, seed, DrawsPitch, first)
+	gm, err := Start(home, away, seed, DrawsPitch, first, nil)
 	if err != nil {
 		return Result{}, err
 	}
@@ -190,11 +188,10 @@ func (t *team) setDefense() {
 	t.defense = sum / 8
 }
 
-func newGame(away, home *Club, seed Seed, draws Draws, first uint64) *game {
+func newGame(away, home *Club, seed Seed, draws Draws, first uint64, bound []byte) *game {
 	g := &game{seed: seed, draws: draws, inning: 1, top: true, round: first, chains: map[[2]string]chain{}}
 	if draws == DrawsGame {
-		g.pcg = rand.NewPCG(seed.A, seed.B)
-		g.rng = rand.New(g.pcg)
+		g.bound = bound
 	}
 	for i, c := range []*Club{away, home} {
 		t := newTeam(c, i)
@@ -252,19 +249,20 @@ func (g *game) chainFor(batter, pitcher string, pp plateProbs) chain {
 	return c
 }
 
-// pitch throws the next pitch with draws from src and resolves what it
+// pitch throws the next pitch with the event's draws and resolves what it
 // brings: the count, the plate appearance's end, a steal attempt on a pitch
 // that is not the last, the half-inning's end, the game's end, and the next
 // plate appearance. It answers the pitch and the gap to the next one's round.
-func (g *game) pitch(src *rand.Rand) (Pitch, uint64) {
+func (g *game) pitch(d drawer) (Pitch, uint64) {
 	pa := g.pa
+	hook(d, "before")
 	rec := Pitch{Balls: g.balls, Strikes: g.strikes}
 	if g.draws == DrawsPitch {
 		rec.Round = g.round
 	}
 	g.pitches++
 	t, b, s, _ := pa.ch.at(g.balls, g.strikes)
-	u := src.Float64()
+	u := d.draw(purposeCall, 0)
 	ended := true
 	switch {
 	case u < t:
@@ -280,7 +278,13 @@ func (g *game) pitch(src *rand.Rand) (Pitch, uint64) {
 			rec.Call = CallInPlay
 			pa.pitches = append(pa.pitches, rec)
 			pa.bl.AB++
-			g.endPlate(g.inPlay(src, pa.fld, pa.pp, pa.bl, pa.pl, pa.br))
+			hook(d, "between")
+			outcome := g.inPlay(d, pa.fld, pa.pp, pa.bl, pa.pl, pa.br)
+			hook(d, "between")
+			if !noDirection {
+				g.curToward = toward(outcome, battingLeft(pa.p.Bats, pa.sp.Throws), d.draw(purposeDirection, 0))
+			}
+			g.endPlate(outcome)
 		}
 	case u < t+b:
 		rec.Call = CallBall
@@ -319,11 +323,12 @@ func (g *game) pitch(src *rand.Rand) (Pitch, uint64) {
 		ended = false
 	}
 	if !ended && g.bases[0] != nil && g.bases[1] == nil {
-		g.steal(src)
+		g.steal(d)
 		if g.outs >= 3 {
 			g.voidPlate()
 		}
 	}
+	hook(d, "after")
 	return rec, g.afterPitch()
 }
 
@@ -393,16 +398,16 @@ func (g *game) voidPlate() {
 }
 
 // inPlay resolves a ball in play: home run, hit by type, or out by type.
-func (g *game) inPlay(src *rand.Rand, fld *team, pp plateProbs, bl *BatterLine, pl *PitcherLine, br *runner) string {
-	if src.Float64() < pp.hr {
+func (g *game) inPlay(d drawer, fld *team, pp plateProbs, bl *BatterLine, pl *PitcherLine, br *runner) string {
+	if d.draw(purposeBatted, battedHomer) < pp.hr {
 		bl.HR++
 		pl.H++
 		g.homer(br)
 		return OutcomeHR
 	}
-	if src.Float64() < pp.hit {
+	if d.draw(purposeBatted, battedHit) < pp.hit {
 		pl.H++
-		r := src.Float64()
+		r := d.draw(purposeBatted, battedType)
 		switch {
 		case r < pp.triple:
 			bl.Triples++
@@ -410,18 +415,18 @@ func (g *game) inPlay(src *rand.Rand, fld *team, pp plateProbs, bl *BatterLine, 
 			return Outcome3B
 		case r < pp.triple+pp.double:
 			bl.Doubles++
-			g.double(src, br)
+			g.double(d, br)
 			return Outcome2B
 		default:
 			bl.Singles++
-			g.single(src, br)
+			g.single(d, br)
 			return Outcome1B
 		}
 	}
-	if src.Float64() < anchorGB {
-		return g.groundOut(src, fld)
+	if d.draw(purposeBatted, battedGround) < anchorGB {
+		return g.groundOut(d, fld)
 	}
-	outcome := g.airOut(src, fld)
+	outcome := g.airOut(d, fld)
 	if outcome == OutcomeSF {
 		bl.AB--
 		bl.SF++
@@ -510,6 +515,7 @@ func (g *game) beginPlay(rbi *BatterLine) {
 	g.curRuns = 0
 	g.curCharged = nil
 	g.curRBI = rbi
+	g.curToward = ""
 }
 
 // endPlay logs a play: a plate appearance with its pitches and outcome, an
@@ -535,16 +541,9 @@ func (g *game) endPlay(before snapshot, batter, pitcher, outcome string, pitches
 		Charged:     g.curCharged,
 		Away:        g.score[0],
 		Home:        g.score[1],
+		Toward:      g.curToward,
 		Pitches:     pitches,
 		OnPitch:     onPitch,
-	}
-	if outcome == "" {
-		p.Text = fmt.Sprintf("%s %d: %s, inning ended", half, g.inning, batter)
-	} else {
-		p.Text = fmt.Sprintf("%s %d: %s %s", half, g.inning, batter, outcome)
-	}
-	if g.curRuns > 0 {
-		p.Text += fmt.Sprintf(", %d scored", g.curRuns)
 	}
 	g.plays = append(g.plays, p)
 }

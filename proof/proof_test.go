@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/queone/mud-engine/beacon"
+	"github.com/queone/mud-engine/engine"
 	"github.com/queone/mud-engine/internal/prooftest"
 	"github.com/queone/mud-engine/proof"
 	"github.com/queone/mud-engine/proof/notary"
@@ -83,7 +84,7 @@ func TestEachAlteredLinkFailsOnItsOwn(t *testing.T) {
 		}},
 		{"a round other than the Day's", "commitment", "bound round", func(p *proof.Proof, _ *proof.Commitment, _ *proof.BoxScore) { p.Round++ }},
 		{"another game number", "seed", "Day*16+slot", func(p *proof.Proof, _ *proof.Commitment, _ *proof.BoxScore) { p.Game++ }},
-		{"another engine model", "engine", "binds engine model 2, the proof names 1", func(p *proof.Proof, _ *proof.Commitment, _ *proof.BoxScore) {
+		{"another engine model", "engine", "binds engine model 4, the proof names 1", func(p *proof.Proof, _ *proof.Commitment, _ *proof.BoxScore) {
 			p.Engine = "1"
 		}},
 		{"another draw mode", "engine", "binds game draws, the proof names pitch", func(p *proof.Proof, _ *proof.Commitment, _ *proof.BoxScore) {
@@ -148,27 +149,43 @@ func TestRunCommandNamesTheProofsVersion(t *testing.T) {
 	}
 }
 
-// The advice for a proof from another engine model names the verifier
-// version the proof names, and never this verifier's own version, another
-// module's, or none.
-func TestTheEngineAdviceNeverNamesTheRunningVerifier(t *testing.T) {
-	for module, command := range map[string]bool{
-		proof.Path + "@v0.1.0":             true,
-		proof.Path + "@" + proof.Version(): false,
-		"example.com/other@v0.1.0":         false,
-		proof.Path:                         false,
-		"":                                 false,
+// A game of an earlier engine model fails the engine link with the command
+// for the release the table names, whatever module the proof names, since a
+// site names its own running release; a model no release replays says so.
+func TestTheEngineAdviceNamesTheReleaseThatReplaysTheModel(t *testing.T) {
+	for _, module := range []string{proof.Path + "@v0.1.0", proof.Path + "@" + proof.Version(), "example.com/other@v0.1.0", ""} {
+		for model, want := range map[string]string{
+			"2": "replays model 4; run go run github.com/queone/mud-engine/cmd/mud-verify@v0.7.1 URL",
+			"3": "replays model 4; run go run github.com/queone/mud-engine/cmd/mud-verify@v0.7.1 URL",
+			"5": "replays model 4; no verifier release replays it",
+		} {
+			p, c, box := whole(t)
+			if err := prooftest.WithModel(&p, &c, model); err != nil {
+				t.Fatal(err)
+			}
+			p.Module = module
+			r := proof.Check(p, c, box, beacon.Verify, proof.DefaultTrust())
+			if l := link(t, r, "engine"); r.OK() || l.OK || !strings.HasSuffix(l.Detail, want) {
+				t.Errorf("model %s, module %q: %q", model, module, l.Detail)
+			}
+		}
+	}
+}
+
+// ModuleFor names this build for the current model, v0.7.1 for models 2
+// and 3, and nothing for a model no release replays.
+func TestModuleForNamesTheReleaseThatReplaysEachModel(t *testing.T) {
+	for model, want := range map[string]string{
+		engine.Version: proof.Path + "@" + proof.Version(),
+		"2":            proof.Path + "@v0.7.1",
+		"3":            proof.Path + "@v0.7.1",
 	} {
-		p, c, box := model3(t)
-		if err := prooftest.WithModel(&p, &c, "1"); err != nil {
-			t.Fatal(err)
+		if got, ok := proof.ModuleFor(model); !ok || got != want {
+			t.Errorf("model %s: %q, %v; want %q", model, got, ok, want)
 		}
-		p.Module = module
-		l := link(t, proof.Check(p, c, box, beacon.Verify, proof.DefaultTrust()), "engine")
-		named := strings.Contains(l.Detail, "go run ")
-		if l.OK || named != command || (!command && !strings.HasSuffix(l.Detail, "the proof names no other verifier version to run")) {
-			t.Errorf("module %q: %q", module, l.Detail)
-		}
+	}
+	if got, ok := proof.ModuleFor("5"); ok || got != "" {
+		t.Errorf("model 5: %q, %v", got, ok)
 	}
 }
 
@@ -497,9 +514,9 @@ func editEntry(t *testing.T, raw json.RawMessage, edit func(map[string]any)) jso
 	return out
 }
 
-func model3(t *testing.T) (proof.Proof, proof.Commitment, proof.BoxScore) {
+func whole(t *testing.T) (proof.Proof, proof.Commitment, proof.BoxScore) {
 	t.Helper()
-	p, c, box, err := prooftest.Model3Game()
+	p, c, box, err := prooftest.WholeGame()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -515,22 +532,22 @@ func live(t *testing.T) (proof.Proof, proof.Commitment, proof.BoxScore) {
 	return p, c, box
 }
 
-// A model 3 game verifies in both draw modes through the model its
-// commitment names, a per-pitch game's rounds checked as an eighth link, and
-// a model 2 game still verifies through the frozen model.
+// A game of the current model verifies under its Day's commitment and under
+// its own, in both draw modes, a per-pitch game's rounds checked as an
+// eighth link.
 func TestEachModelAndDrawModeReplaysAsCommitted(t *testing.T) {
 	p, c, box := game(t)
-	if r := proof.Check(p, c, box, beacon.Verify, proof.DefaultTrust()); !r.OK() || link(t, r, "engine").Detail != "model 2, game draws" {
-		t.Fatalf("a model 2 game: %+v", r.Links)
+	if r := proof.Check(p, c, box, beacon.Verify, proof.DefaultTrust()); !r.OK() || link(t, r, "engine").Detail != "model 4, game draws" {
+		t.Fatalf("a game under its Day's commitment: %+v", r.Links)
 	}
-	p, c, box = model3(t)
+	p, c, box = whole(t)
 	r := proof.Check(p, c, box, beacon.Verify, proof.DefaultTrust())
-	if !r.OK() || len(r.Links) != 7 || link(t, r, "engine").Detail != "model 3, game draws" {
-		t.Fatalf("a model 3 game: %+v", r.Links)
+	if !r.OK() || len(r.Links) != 7 || link(t, r, "engine").Detail != "model 4, game draws" {
+		t.Fatalf("a whole game: %+v", r.Links)
 	}
 	p, c, box = live(t)
 	r = proof.Check(p, c, box, prooftest.FakeVerify, proof.DefaultTrust())
-	if !r.OK() || len(r.Links) != 8 || link(t, r, "engine").Detail != "model 3, pitch draws" {
+	if !r.OK() || len(r.Links) != 8 || link(t, r, "engine").Detail != "model 4, pitch draws" {
 		t.Fatalf("a live game: %+v", r.Links)
 	}
 	if l := link(t, r, "rounds"); !strings.HasSuffix(l.Detail, "rounds, every signature verified") || len(p.Rounds) < 200 {
@@ -550,22 +567,27 @@ func TestEachModelAndDrawModeReplaysAsCommitted(t *testing.T) {
 
 // A proof must name the model and draw mode its commitment bound, a
 // commitment naming none binding model 2 and whole-game draws; a committed
-// model this verifier does not replay names the verifier that does.
+// earlier model names the release that replays it.
 func TestAProofMustMatchItsCommittedModelAndDraws(t *testing.T) {
 	cases := []struct {
 		name, want string
 		game       func(*testing.T) (proof.Proof, proof.Commitment, proof.BoxScore)
 		alter      func(*proof.Proof, *proof.Commitment)
 	}{
-		{"model 2 claimed on a model 3 commitment", "binds engine model 3, the proof names 2", model3, func(p *proof.Proof, _ *proof.Commitment) { p.Engine = "2" }},
-		{"pitch draws claimed on a game commitment", "binds game draws, the proof names pitch", model3, func(p *proof.Proof, _ *proof.Commitment) { p.Draws = "pitch" }},
+		{"model 3 claimed on a model 4 commitment", "binds engine model 4, the proof names 3", whole, func(p *proof.Proof, _ *proof.Commitment) { p.Engine = "3" }},
+		{"pitch draws claimed on a game commitment", "binds game draws, the proof names pitch", whole, func(p *proof.Proof, _ *proof.Commitment) { p.Draws = "pitch" }},
 		{"game draws claimed on a pitch commitment", "binds pitch draws, the proof names game", live, func(p *proof.Proof, _ *proof.Commitment) { p.Draws = "" }},
-		{"model 3 claimed on an older commitment", "binds engine model 2, the proof names 3", game, func(p *proof.Proof, _ *proof.Commitment) { p.Engine = "3" }},
-		{"a model this verifier does not replay", "replays models 2 and 3; run go run github.com/queone/mud-engine/cmd/mud-verify@v0.1.0 URL", model3, func(p *proof.Proof, c *proof.Commitment) {
-			if err := prooftest.WithModel(p, c, "4"); err != nil {
+		{"model 4 claimed on a commitment naming none", "binds engine model 2, the proof names 4", whole, func(p *proof.Proof, c *proof.Commitment) {
+			if err := prooftest.WithModel(p, c, ""); err != nil {
 				t.Fatal(err)
 			}
-			p.Module = proof.Path + "@v0.1.0"
+			p.Engine = "4"
+		}},
+		{"a model 2 game", "replays model 4; run go run github.com/queone/mud-engine/cmd/mud-verify@v0.7.1 URL", whole, func(p *proof.Proof, c *proof.Commitment) {
+			if err := prooftest.WithModel(p, c, ""); err != nil {
+				t.Fatal(err)
+			}
+			p.Engine = "2"
 		}},
 	}
 	for _, tc := range cases {

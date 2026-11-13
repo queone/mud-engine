@@ -18,7 +18,6 @@ import (
 
 	"github.com/queone/mud-engine/beacon"
 	"github.com/queone/mud-engine/engine"
-	"github.com/queone/mud-engine/engine/model2"
 )
 
 // Path is this module's import path.
@@ -32,22 +31,42 @@ type Pairing struct {
 	Away engine.Club `json:"away"`
 	// Engine and Draws are the engine model and the draw mode the game plays
 	// under, committed with its inputs since model 3, so neither can be chosen
-	// once a round is known; a pairing naming neither, from before, plays model
+	// once a round is known; a pairing naming neither, from before, bound model
 	// 2 whole from one round.
 	Engine string `json:"engine,omitempty"`
 	Draws  string `json:"draws,omitempty"`
 }
 
-// FirstModel is the engine model a pairing that names none plays under.
-const FirstModel = "2"
+// unnamedModel is the engine model a pairing that names none bound.
+const unnamedModel = "2"
 
-// CommittedModel is the engine model a pairing binds: FirstModel when it
-// names none.
+// CommittedModel is the engine model a pairing binds: model 2 when it names
+// none.
 func CommittedModel(pair Pairing) string {
 	if pair.Engine == "" {
-		return FirstModel
+		return unnamedModel
 	}
 	return pair.Engine
+}
+
+// replayRelease names, for each engine model this module played before the
+// current one, the last module release whose verifier replays it. This
+// module replays only the current model; a game of an earlier one stays
+// verifiable through the release the table names.
+var replayRelease = map[string]string{"2": "v0.7.1", "3": "v0.7.1"}
+
+// ModuleFor answers the module, PATH@VERSION, whose verifier replays a game
+// of the engine model: this build's for the current model, the release
+// replayRelease names for an earlier one, and ok false for a model no
+// release replays.
+func ModuleFor(model string) (string, bool) {
+	if model == engine.Version {
+		return Path + "@" + Version(), true
+	}
+	if v, ok := replayRelease[model]; ok {
+		return Path + "@" + v, true
+	}
+	return "", false
 }
 
 // CommittedDraws is the draw mode a pairing binds: whole-game draws when it
@@ -105,7 +124,8 @@ type Proof struct {
 	CommittedAt        time.Time       `json:"committed_at"`
 	Inputs             json.RawMessage `json:"inputs"`
 	Engine             string          `json:"engine_version"`
-	// Module is the engine module and version the site ran, as PATH@VERSION.
+	// Module is the engine module and version whose verifier replays the
+	// game, as PATH@VERSION: the site's own for a game of the current model.
 	Module string `json:"module"`
 	// CommitmentScope is the scope of the commitment the game played under:
 	// ScopeGame for its own, or ScopeDay, or empty from a site that predates
@@ -265,10 +285,11 @@ type Verifier func(round uint64, signature string) ([]byte, error)
 // against its commitment, the commitment's anchor under trust and its round
 // after the anchor's time, the committed inputs against their hash, each
 // beacon round's signature and randomness, the seed, and the replay against
-// the served box score, through model 2 or model 3 as the commitment says. A
-// per-pitch game's rounds are checked by signature, by sequence from the
-// bound round under the gap rule, and by count. A proof from a model this
-// verifier does not replay names the verifier version that does. A
+// the served box score, through the current model in the draw mode the
+// commitment says. A per-pitch game's rounds are checked by signature, by
+// sequence from the bound round under the gap rule, and by count. A game of
+// an earlier model fails the engine link with the command for the release
+// that replays it. A
 // commitment with no anchor reports that link as none, and the rest still
 // decide the verdict.
 func Check(p Proof, c Commitment, box BoxScore, verify Verifier, trust Trust) Report {
@@ -287,8 +308,8 @@ func Check(p Proof, c Commitment, box BoxScore, verify Verifier, trust Trust) Re
 		add("engine", false, "the game's commitment binds engine model %s, the proof names %s", model, p.Engine)
 	case drawsOf(p.Draws) != draws:
 		add("engine", false, "the game's commitment binds %s draws, the proof names %s", draws, drawsOf(p.Draws))
-	case model != FirstModel && model != engine.Version:
-		add("engine", false, "the game used engine model %s and this verifier replays models %s and %s; %s", model, FirstModel, engine.Version, otherVerifier(p.Module))
+	case model != engine.Version:
+		add("engine", false, "the game used engine model %s and this verifier replays model %s; %s", model, engine.Version, olderVerifier(model))
 	default:
 		engineOK = true
 		add("engine", true, "model %s, %s draws", model, draws)
@@ -390,10 +411,8 @@ func Check(p Proof, c Commitment, box BoxScore, verify Verifier, trust Trust) Re
 	var res engine.Result
 	pitches := 0
 	switch {
-	case model == FirstModel:
-		res, err = model2.Simulate(inputs.Home, inputs.Away, seed)
 	case draws == string(engine.DrawsGame):
-		res, err = engine.Simulate(inputs.Home, inputs.Away, seed)
+		res, err = engine.Simulate(inputs.Home, inputs.Away, seed, randomness)
 	default:
 		res, err = engine.SimulateLive(inputs.Home, inputs.Away, seed, p.Round, func(round uint64) ([]byte, error) {
 			i := pitches
@@ -592,17 +611,15 @@ func compareInnings(half string, served []*int, replay []int) string {
 	return ""
 }
 
-// otherVerifier answers the advice for a proof from another engine model: the
-// command that runs the verifier version the proof names, or, when the proof
-// names this verifier's own version, another module, or no version, a note
-// that it names no other, so the advice never sends a reader back to the
-// verifier that just failed.
-func otherVerifier(module string) string {
-	path, version, ok := strings.Cut(module, "@")
-	if !ok || path != Path || version == "" || version == Version() {
-		return "the proof names no other verifier version to run"
+// olderVerifier answers the advice for a game of an engine model this
+// verifier does not replay: the command that runs the release the table
+// names for it, or a note that no release replays it. It reads the model,
+// not the module a proof names, since a site names its own running release.
+func olderVerifier(model string) string {
+	if v, ok := replayRelease[model]; ok {
+		return "run " + RunCommand(Path+"@"+v)
 	}
-	return "run " + RunCommand(module)
+	return "no verifier release replays it"
 }
 
 // RunCommand is the command that runs the verifier at the module version a

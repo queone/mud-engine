@@ -1,11 +1,6 @@
 package engine
 
-import (
-	"crypto/sha256"
-	"encoding/binary"
-	"math/rand/v2"
-	"sync"
-)
+import "sync"
 
 // Pitch is one pitch of a plate appearance: the count before it, its call,
 // and in per-pitch play the beacon round it drew on.
@@ -26,9 +21,8 @@ const (
 	CallHitByPitch = "hit by pitch"
 )
 
-// Draws says how a game draws its randomness: from one stream of its seed
-// for the whole game, or a stream for each pitch from the seed and the
-// pitch's own beacon round.
+// Draws says which beacon randomness a game's draws are addressed with: the
+// bound round's for every pitch, or each pitch's own round's.
 type Draws string
 
 // The draw modes.
@@ -44,20 +38,6 @@ const (
 	GapRunner = 7  // 21 seconds, with a runner on
 	GapBreak  = 40 // 2 minutes, after a half-inning ends or a pitcher changes mid-inning
 )
-
-// DerivationPitch names how a pitch's stream is derived.
-const DerivationPitch = "sha256(seed|round|pitch)"
-
-// pitchStream starts the stream for one pitch: the SHA-256 of the game's seed,
-// the round's randomness, and the pitch's index seeds a PCG stream.
-func pitchStream(seed Seed, randomness []byte, index int) *rand.Rand {
-	buf := make([]byte, 24, 24+len(randomness))
-	binary.BigEndian.PutUint64(buf[0:8], seed.A)
-	binary.BigEndian.PutUint64(buf[8:16], seed.B)
-	binary.BigEndian.PutUint64(buf[16:24], uint64(index))
-	sum := sha256.Sum256(append(buf, randomness...))
-	return rand.New(rand.NewPCG(binary.BigEndian.Uint64(sum[0:8]), binary.BigEndian.Uint64(sum[8:16])))
-}
 
 // The count shape: how the base rates a plate appearance's targets solve for
 // pass through each count. Fouls come often with two strikes; a ball in play

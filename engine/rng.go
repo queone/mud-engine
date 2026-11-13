@@ -3,10 +3,9 @@ package engine
 import (
 	"crypto/sha256"
 	"encoding/binary"
-	"math/rand/v2"
 )
 
-// Seed is the pair of 64-bit values that starts a game's random stream.
+// Seed is the pair of 64-bit values every draw of a game is addressed by.
 type Seed struct {
 	A          uint64 `json:"a"`
 	B          uint64 `json:"b"`
@@ -61,6 +60,3 @@ func (s Seed) Derivation() string {
 	}
 	return s.derivation
 }
-
-// stream starts the deterministic random stream for the seed.
-func (s Seed) stream() *rand.Rand { return rand.New(rand.NewPCG(s.A, s.B)) }

@@ -359,8 +359,7 @@ var golden = map[string]struct {
 	away, home int
 	digest     string
 }{
-	"2": {3, 4, "dc9a57ffff45818f99ddd650f638cb37ef0d29ac86b7a8cde7c04813dc56e6e1"},
-	"3": {3, 5, "21fa3e240249e3911d8aacc0e7221b4479d5a610820f6376365ba1c808b227ff"},
+	"4": {4, 2, "459eafa9d62b18a388a832f49dc996cc30f8d3fd0564e069d68a4949d7c2c144"},
 }
 
 func TestGoldenGameIsPinnedForThisVersion(t *testing.T) {

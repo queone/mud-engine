@@ -10,15 +10,16 @@ Run the newest version, with nothing to install:
 go run github.com/queone/mud-engine/cmd/mud-verify@latest https://mudball.one/games/1234
 ```
 
-The newest version replays engine models 2 and 3, whole or pitch by pitch, and reads box scores in both shapes the
-site has served, so it checks every game played so far, online or from saved copies.
+The newest version replays the current engine model, model 4, whole or pitch by pitch, and reads box scores in both
+shapes the site has served, online or from saved copies. A game of model 2 or 3 fails the engine link with the
+command for v0.7.1, the last release that replays both.
 
 ## Help
 
 ### Usage
 
 ```text
-mud-verify v0.7.1
+mud-verify v0.8.0
 Replay a Mud Baseball game and check every link of its proof
 github.com/queone/mud-engine/cmd/mud-verify
 

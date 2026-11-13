@@ -17,7 +17,10 @@ type Play struct {
 	Charged     []string  `json:"charged,omitempty"`
 	Away        int       `json:"away"`
 	Home        int       `json:"home"`
-	Text        string    `json:"text"`
+	// Toward is the position or outfield gap a ball in play went toward,
+	// one of P, C, 1B, 2B, SS, 3B, LF, LC, CF, RC, and RF; empty on every
+	// other play.
+	Toward string `json:"toward,omitempty"`
 	// Pitches are a plate appearance's pitches in order, none on a play
 	// from a game that did not record them; OnPitch numbers the pitch of the
 	// plate appearance in progress a steal attempt rode, from 1.

@@ -56,7 +56,7 @@ func TestValidateNamesClubSlotAndField(t *testing.T) {
 func TestSimulateRejectsAnIDSharedAcrossClubs(t *testing.T) {
 	home, away := averageClub("Home", "h"), averageClub("Away", "a")
 	away.Lineup[4].Player.ID = home.Lineup[4].Player.ID
-	_, err := Simulate(home, away, RawSeed(1, 1))
+	_, err := Simulate(home, away, RawSeed(1, 1), nil)
 	if err == nil || !strings.Contains(err.Error(), "appears in both clubs") {
 		t.Fatalf("Simulate() error = %v, want shared-id error", err)
 	}
@@ -65,7 +65,7 @@ func TestSimulateRejectsAnIDSharedAcrossClubs(t *testing.T) {
 func TestSimulateRejectsAnInvalidClub(t *testing.T) {
 	home, away := averageClub("Home", "h"), averageClub("Away", "a")
 	away.Name = ""
-	if _, err := Simulate(home, away, RawSeed(1, 1)); err == nil {
+	if _, err := Simulate(home, away, RawSeed(1, 1), nil); err == nil {
 		t.Fatal("Simulate() accepted a club with no name")
 	}
 }

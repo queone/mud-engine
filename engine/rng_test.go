@@ -29,12 +29,3 @@ func TestRawAndZeroSeedsReportRawDerivation(t *testing.T) {
 		t.Errorf("zero Seed derivation = %q, want raw", d)
 	}
 }
-
-func TestSeedStreamIsRepeatable(t *testing.T) {
-	a, b := RawSeed(7, 9).stream(), RawSeed(7, 9).stream()
-	for range 100 {
-		if a.Float64() != b.Float64() {
-			t.Fatal("two streams from one seed diverged")
-		}
-	}
-}

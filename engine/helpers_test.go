@@ -57,7 +57,7 @@ func averageClub(name, prefix string) Club { return ratedClub(name, prefix, avgB
 
 func mustSimulate(t *testing.T, home, away Club, seed Seed) Result {
 	t.Helper()
-	r, err := Simulate(home, away, seed)
+	r, err := Simulate(home, away, seed, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

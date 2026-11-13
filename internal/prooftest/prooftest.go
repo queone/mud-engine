@@ -14,7 +14,6 @@ import (
 
 	"github.com/queone/mud-engine/beacon"
 	"github.com/queone/mud-engine/engine"
-	"github.com/queone/mud-engine/engine/model2"
 	"github.com/queone/mud-engine/proof"
 	"github.com/queone/mud-engine/proof/notary"
 )
@@ -37,12 +36,14 @@ const (
 )
 
 // Game builds the game's proof, its Day's commitment, and its box score; the
-// Day holds three games and this one is slot 2. It is a game from before
-// model 3: its pairing names no model or draws, so it plays model 2 whole.
+// Day holds three games and this one is slot 2. Its pairings name the
+// current model and whole-game draws, so the checks of a Day's commitment
+// still replay.
 func Game() (proof.Proof, proof.Commitment, proof.BoxScore, error) {
 	var day []proof.Pairing
 	for i := range 3 {
-		day = append(day, proof.Pairing{Home: club(fmt.Sprintf("Home %d", i), fmt.Sprintf("h%d", i), 50+i), Away: club(fmt.Sprintf("Away %d", i), fmt.Sprintf("a%d", i), 50-i)})
+		day = append(day, proof.Pairing{Home: club(fmt.Sprintf("Home %d", i), fmt.Sprintf("h%d", i), 50+i), Away: club(fmt.Sprintf("Away %d", i), fmt.Sprintf("a%d", i), 50-i),
+			Engine: engine.Version, Draws: string(engine.DrawsGame)})
 	}
 	inputs, err := json.Marshal(day)
 	if err != nil {
@@ -61,7 +62,7 @@ func Game() (proof.Proof, proof.Commitment, proof.BoxScore, error) {
 		return proof.Proof{}, proof.Commitment{}, proof.BoxScore{}, err
 	}
 	game := uint64(Day*16 + Slot)
-	res, err := model2.Simulate(day[Slot].Home, day[Slot].Away, engine.DeriveBeaconSeed(Seed, Season, game, randomness))
+	res, err := engine.Simulate(day[Slot].Home, day[Slot].Away, engine.DeriveBeaconSeed(Seed, Season, game, randomness), randomness)
 	if err != nil {
 		return proof.Proof{}, proof.Commitment{}, proof.BoxScore{}, err
 	}
@@ -69,8 +70,8 @@ func Game() (proof.Proof, proof.Commitment, proof.BoxScore, error) {
 	bl := proof.BaseballLeague{ID: BaseballLeague, Name: "MFB"}
 	p := proof.Proof{GameID: GameID, BaseballLeague: bl, Season: Season, Day: Day, Slot: Slot, Game: game, BaseballLeagueSeed: Seed,
 		Derivation: engine.DerivationBeacon, Chain: beacon.ChainHash, Scheme: beacon.Scheme, Round: Round, RoundAt: beacon.TimeOf(Round),
-		Signature: Signature, Randomness: Randomness, InputsHash: hash, CommittedAt: committed, Inputs: own, Engine: model2.Version,
-		Module: proof.Path + "@v0.1.0"}
+		Signature: Signature, Randomness: Randomness, InputsHash: hash, CommittedAt: committed, Inputs: own, Engine: engine.Version,
+		Draws: string(engine.DrawsGame), Module: proof.Path + "@v0.1.0"}
 	c := proof.Commitment{BaseballLeague: bl, Season: Season, Day: Day, Round: Round, RoundAt: beacon.TimeOf(Round), InputsHash: hash, CommittedAt: committed, Inputs: inputs}
 	return p, c, Box(res, day[Slot]), nil
 }
@@ -229,21 +230,21 @@ func AnchoredGame() (proof.Proof, proof.Commitment, proof.BoxScore, *notary.Nota
 	return p, c, box, n, nil
 }
 
-// Model3Game is a game under its own commitment whose pairing names engine
-// model 3 and whole-game draws, as a site plans a Day since model 3.
-func Model3Game() (proof.Proof, proof.Commitment, proof.BoxScore, error) {
-	return ownModel3(string(engine.DrawsGame))
+// WholeGame is a game under its own commitment whose pairing names the
+// current engine model and whole-game draws.
+func WholeGame() (proof.Proof, proof.Commitment, proof.BoxScore, error) {
+	return ownCurrent(string(engine.DrawsGame))
 }
 
-// LiveGame is a game under its own commitment whose pairing names engine
-// model 3 and per-pitch draws: its first pitch draws on the bound round and
+// LiveGame is a game under its own commitment whose pairing names the
+// current engine model and per-pitch draws: its first pitch draws on the bound round and
 // each later one on a fake round FakeVerify accepts, and its proof lists
 // every pitch's round and signature.
 func LiveGame() (proof.Proof, proof.Commitment, proof.BoxScore, error) {
-	return ownModel3(string(engine.DrawsPitch))
+	return ownCurrent(string(engine.DrawsPitch))
 }
 
-func ownModel3(draws string) (proof.Proof, proof.Commitment, proof.BoxScore, error) {
+func ownCurrent(draws string) (proof.Proof, proof.Commitment, proof.BoxScore, error) {
 	p, c, _, err := OwnGame()
 	if err != nil {
 		return p, c, proof.BoxScore{}, err
@@ -264,7 +265,7 @@ func ownModel3(draws string) (proof.Proof, proof.Commitment, proof.BoxScore, err
 	seed := engine.DeriveBeaconSeed(Seed, Season, uint64(Day*16+Slot), randomness)
 	var res engine.Result
 	if draws == string(engine.DrawsGame) {
-		res, err = engine.Simulate(pair.Home, pair.Away, seed)
+		res, err = engine.Simulate(pair.Home, pair.Away, seed, randomness)
 	} else {
 		res, err = engine.SimulateLive(pair.Home, pair.Away, seed, Round, func(round uint64) ([]byte, error) { return FakeVerify(round, SignatureOf(round)) })
 	}

@@ -12,9 +12,9 @@ Pick a game on the site and run the newest verifier:
 go run github.com/queone/mud-engine/cmd/mud-verify@latest https://mudball.one/games/1234
 ```
 
-The newest verifier replays engine model 2, the model of every game before module v0.7.0, and model 3, which plays
-each pitch through the count, whole from one round or live with a round for every pitch. A proof from a model it
-does not replay names the verifier version that does, when it names one other than the verifier running.
+The newest verifier replays the current engine model, model 4, which plays each pitch through the count, whole from
+one round or live with a round for every pitch. A game of an earlier model, 2 or 3, fails the engine link with the
+command for `mud-verify` v0.7.1, the last release that replays both.
 
 It fetches the game's proof, the commitment it played under, and its box score, and checks seven links, eight for a game played pitch by pitch. A game
 committed on its own, just before its scheduled start, has its own commitment at `/api/games/ID/commitment`; a game
@@ -23,7 +23,7 @@ played under its Day's commitment, as every game was before games started at the
 
 - engine: the proof names the engine model and the draw mode the game's commitment bound, so neither could be
   chosen once a round was known; a commitment from before model 3 binds model 2 and whole-game draws. A model this
-  verifier does not replay names the version that does.
+  verifier does not replay names the release that does.
 - commitment: the game's round and inputs hash are the ones its commitment bound, and a game's own commitment is for
   its slot and names its scheduled start.
 - anchor: the commitment existed outside the site before its round: two RFC 3161 timestamp authorities, of
@@ -43,7 +43,7 @@ played under its Day's commitment, as every game was before games started at the
   and 40 after a half-inning or a mid-inning pitching change, so the site could not wait for a better round.
 - seed: the seed derives from the baseball league's public seed, the season, the game number (Day*16+slot), and the
   round's randomness.
-- replay: the model the commitment names replays the game from the inputs and the seed, model 3 pitch by pitch,
+- replay: the current model replays the game from the inputs, the seed, and the rounds, pitch by pitch,
   and every inning, batter line, and pitcher line matches the box score. Each box score line names its player for the replay by `engine_player`, the player's id in
   the game's inputs; a box score saved before `engine_player` existed names it by a string `player` instead. A line
   whose `engine_player` is present but not a nonempty string, or that names no id at all, fails this link on that
@@ -51,6 +51,34 @@ played under its Day's commitment, as every game was before games started at the
 
 It prints one line per link and exits 0 when all pass, 1 when one fails. `mud-verify -f PROOF -c COMMITMENT -b
 BOXSCORE` checks saved copies of the three answers offline, including copies saved before `engine_player`.
+
+## The engine model
+
+An engine model is the exact simulation contract a game's commitment binds: its rules, rate tables, arithmetic, draw
+addressing, and the meaning of the events it records. Every commitment names its model, and this module plays only
+the current one.
+
+Model 4 gives every random draw an address: the game's seed, the beacon randomness of the event's pitch, the event,
+the purpose, and the index. The event is the game's pitch ordinal from 0; the randomness is the pitch's own round's in
+live play and the bound round's for a game played whole. A draw is the SHA-256 of the ASCII tag
+`mud-engine draw v1`, the seed's two values as 8-byte big-endian integers, the randomness's length as 1 byte, the
+randomness, the event as an 8-byte integer, the purpose as a 2-byte one, and the index as a 4-byte one; its first 8
+bytes, shifted right by 11, times 2^-53, give a value in [0, 1). Asking for one draw never moves another, so a new
+kind of draw leaves every existing outcome as it was.
+
+| Purpose | Id | Index |
+|---|---|---|
+| Pitch call | 1 | 0 |
+| Batted ball | 2 | 0 homer, 1 hit, 2 hit type, 3 ground or air |
+| Runner | 3 | the base the runner started on: 0 first, 1 second, 2 third |
+| Double play | 4 | 0 |
+| Steal | 5 | 0 attempt, 1 success |
+| Direction | 6 | 0 |
+
+Each ball in play records `toward`, the position or outfield gap it went toward: P, C, 1B, 2B, SS, 3B, LF, LC
+(left-center), CF, RC (right-center), or RF; hits and homers reach the gaps, and an out names its fielder. A batter pulls
+toward his own side's field, a switch hitter batting opposite the pitcher's hand; the direction feeds no other part
+of the game.
 
 ## What it proves, and what it does not
 
@@ -68,8 +96,8 @@ BOXSCORE` checks saved copies of the three answers offline, including copies sav
 
 ## Packages
 
-- `engine`: one game's simulation from two clubs and a seed, pitch by pitch at model 3, played whole or a pitch at
-  a time from a saved state; `engine/model2` is the frozen model every earlier game played under.
+- `engine`: one game's simulation from two clubs and a seed, pitch by pitch at model 4, played whole or a pitch at
+  a time from a saved state.
 - `beacon`: drand quicknet constants, the pinned public key, round verification, and a relay client.
 - `proof`: the input format, the inputs hash, the shapes the site serves, `Fetch`, `Check`, the anchor's
   statement and checks, and the pinned trust: the log's key and the timestamp authorities' roots.
