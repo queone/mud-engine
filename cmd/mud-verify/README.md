@@ -19,7 +19,7 @@ command for v0.7.1, the last release that replays both.
 ### Usage
 
 ```text
-mud-verify v0.8.1
+mud-verify v0.8.2
 Replay a Mud Baseball game and check every link of its proof
 github.com/queone/mud-engine/cmd/mud-verify
 

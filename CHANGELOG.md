@@ -3,6 +3,7 @@
 | Version | Summary |
 |---------|---------|
 | Unreleased | |
+| 0.8.2 | build.sh scans only governed Markdown for bare identifiers |
 | 0.8.1 | build.sh comment follows the updated governance files |
 | 0.8.0 | Engine model 4: addressed random draws, hit direction; verifier replays model 4 |
 | 0.7.1 | build.sh keeps one blank line between plan items when prep removes one |

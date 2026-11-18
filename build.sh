@@ -2613,8 +2613,11 @@ EOF
 # --- end child repositories ---
 
 # --- bare identifier scan (identical in every build script) ---
-# Flags bare AC, AT, and IE identifiers in Markdown outside the places that
-# AGENTS.md ### AC Mechanics allows. A child repository gets no allowance, as
+# Flags bare AC, AT, and IE identifiers in governed Markdown outside the places
+# that the AGENTS.md bare-identifier rules allow. Governed Markdown is the root
+# AGENTS.md, README.md, arch.md, plan.md, history.md, and CHANGELOG.md, plus
+# every Markdown file under govna/. A link counts by its own path. Every other
+# Markdown file is outside the scan. A child repository gets no allowance, as
 # its parent's AGENTS.md requires. Class, Part, and Round numbers are not
 # scanned because canon defines no written form for them.
 
@@ -2643,6 +2646,10 @@ _bare_id_scan() {
     rel="${rel#./}"
     [ -f "$rel" ] || continue
     case "$rel" in tests/fixtures/* | testdata/* | */testdata/*) continue ;; esac
+    case "$rel" in
+      AGENTS.md | README.md | arch.md | plan.md | history.md | CHANGELOG.md | govna/*) ;;
+      *) continue ;;
+    esac
     if [ "$child" -eq 0 ]; then
       [ "$rel" != CHANGELOG.md ] || continue
       if [[ "$rel" =~ $ac_doc ]]; then continue; fi
@@ -2688,7 +2695,7 @@ _bare_id_scan() {
         if (before ~ /[A-Za-z0-9_]/ || after ~ /[A-Za-z0-9_]/) continue
         if (template && id !~ /^IE/) continue
         if (plan && id ~ /^IE/) continue
-        printf "%s:%d: bare identifier %s; replace it with plain words or a placeholder such as AC<N>, or move it to a place AGENTS.md ### AC Mechanics allows\n", path, FNR, id
+        printf "%s:%d: bare identifier %s; replace it with plain words or a placeholder such as AC<N>, or move it to a place the AGENTS.md bare-identifier rules allow\n", path, FNR, id
       }
     }' "${files[@]}"
 }
