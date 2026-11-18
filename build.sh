@@ -932,7 +932,7 @@ _scan_nested_fences() { # $1=relpath $2=file
 # ── test-naming lint (AT/AC-only subset) ─────────────────────────────────────
 # _collect_test_files <root> — emits absolute *_test.go paths NUL-delimited.
 # Primary: rg --files -0; fallback: find -print0.
-# find fallback is an intentional exception to the Tool Use rule: rg is preferred
+# find fallback: rg is preferred,
 # but find provides Bash 3.2-portable discovery when rg is absent. The fallback
 # scans a conservative superset (ignores .gitignore) vs rg.
 _collect_test_files() {
